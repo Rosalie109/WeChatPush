@@ -106,110 +106,119 @@ async function sendWechatMessage() {
         return;
     }
     
-    toastr.info("正在发送系统指令，触发 AI 生成...", "微信推送");
+    toastr.info("指令已发送，等待 AI 思考与回复...", "微信推送");
 
     try {
-        const nowTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
-        let userPrompt = extension_settings[EXT_NAME].customPrompt;
-        let finalPrompt = "";
-        
-        // 极简指令，不限制格式
-        if (!userPrompt || userPrompt.trim() === '') {
-            finalPrompt = `[系统指令：当前时间是 ${nowTime}。请主动给我发一条微信消息。直接说出你想对我说的话。]`;
-        } else {
-            let replacedPrompt = userPrompt.replace(/\{\{time\}\}/g, nowTime).replace(/\{\{time_UTC\+8\}\}/g, nowTime);
-            finalPrompt = `[系统指令：${replacedPrompt}]`;
-        }
-
-        // 1. 发送系统指令并触发生成
-        await executeSlashCommands(`/sys ${finalPrompt} | /gen`);
-
-        // 2. 等待 AI 开始生成
-        let waitStart = 0;
-        while (!window.is_generating && waitStart < 50) {
-            await new Promise(r => setTimeout(r, 100));
-            waitStart++;
-        }
-
-        if (!window.is_generating) {
-            toastr.error("API 未能启动生成，请检查网络", "微信推送");
-            return;
-        }
-
-        // 3. 等待 AI 彻底生成完毕
-        while (window.is_generating) {
-            await new Promise(r => setTimeout(r, 1000));
-        }
-
-        // 给酒馆写入聊天记录的时间
-        await new Promise(resolve => setTimeout(resolve, 1500));
-
-        // 4. 倒序抓取 AI 的最新回复
-        const context = typeof getContext === 'function' ? getContext() : {};
-        const chatArr = context.chat || window.chat;
-        
-        let lastMsg = "获取内容失败，请重试";
-        if (chatArr && chatArr.length > 0) {
-            for (let i = chatArr.length - 1; i >= 0; i--) {
-                if (!chatArr[i].is_system && !chatArr[i].is_user && chatArr[i].name !== 'System') {
-                    lastMsg = chatArr[i].mes;
-                    break;
-                }
+        // 1. 拍快照：记录当前最后一条 AI 发过的话
+        let previousLastAiMsg = "";
+        const chatBefore = window.chat || [];
+        for (let i = chatBefore.length - 1; i >= 0; i--) {
+            if (!chatBefore[i].is_system && !chatBefore[i].is_user && chatBefore[i].name !== 'System') {
+                previousLastAiMsg = chatBefore[i].mes;
+                break;
             }
         }
 
-        // 5. 暴力清洗：剥离 <think> 标签，剃除括号动作，完全保留纯文字和表情
-        let pushContent = lastMsg.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-        pushContent = pushContent.replace(/\*[\s\S]*?\*/g, '')
-                                 .replace(/（[\s\S]*?）/g, '')
-                                 .replace(/\([\s\S]*?\)/g, '')
-                                 .trim();
-
-        if (!pushContent || pushContent === '') {
-            pushContent = "收到一条空消息。";
+        // 2. 构建最随意的提示词
+        const nowTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
+        let userPrompt = extension_settings[EXT_NAME].customPrompt || '';
+        let finalPrompt = "";
+        
+        if (userPrompt.trim() === '') {
+            finalPrompt = `[系统隐形指令：现在是 ${nowTime}。请主动发一条微信消息给我。不要写心理活动，直接说出你想对我说的话。]`;
+        } else {
+            let replacedPrompt = userPrompt.replace(/\{\{time\}\}/g, nowTime).replace(/\{\{time_UTC\+8\}\}/g, nowTime);
+            finalPrompt = `[系统隐形指令：${replacedPrompt}]`;
         }
 
-        // 6. 提取角色名作为标题
-        let charName = "AI";
-        if (context.name2) charName = context.name2;
-        else if (window.name2) charName = window.name2;
-        else if (window.characters && window.this_chid !== undefined) charName = window.characters[window.this_chid].name;
+        // 3. 发送系统指令并让AI生成
+        await executeSlashCommands(`/sys ${finalPrompt} | /gen`);
 
-        let pushTitle = `来自 ${charName} 的新消息`;
+        // 4. 最强无脑轮询法：只要 AI 发的新消息和“快照”不一样，就是成功了！
+        let newAiMsg = "";
+        let attempts = 0;
+        let found = false;
 
-        toastr.info("内容已提取，正在推送到微信...", "微信推送");
-
-        // 7. 终极网络请求方案：使用 HTTPS + GET + no-cors 强制穿透跨域拦截
-        const pushUrl = "https://www.pushplus.plus/send";
-        const params = new URLSearchParams({
-            token: token,
-            title: pushTitle,
-            content: pushContent
-        });
-
-        await fetch(`${pushUrl}?${params.toString()}`, {
-            method: 'GET',
-            mode: 'no-cors' // 关键所在：彻底无视浏览器的跨域报错
-        });
-
-        toastr.success("微信推送指令已发出！", "微信推送");
-
-        // 8. 事后清理刚才发在公屏的系统指令
-        try {
-            if (chatArr && chatArr.length >= 1) {
-                for (let i = chatArr.length - 1; i >= 0; i--) {
-                    if (chatArr[i].is_system && chatArr[i].mes.includes("系统指令")) {
-                        chatArr.splice(i, 1);
-                        if (typeof window.printMessages === 'function') window.printMessages();
+        while (attempts < 120) {
+            await new Promise(r => setTimeout(r, 1000));
+            
+            // 只有当 AI 停止打字时，才去检查有没有新消息
+            if (!window.is_generating) {
+                const chatCurrent = window.chat || [];
+                for (let i = chatCurrent.length - 1; i >= 0; i--) {
+                    if (!chatCurrent[i].is_system && !chatCurrent[i].is_user && chatCurrent[i].name !== 'System') {
+                        const currentMes = chatCurrent[i].mes;
+                        // 对比：和之前那条不一样，且不是空白！
+                        if (currentMes !== previousLastAiMsg && currentMes.trim() !== "") {
+                            newAiMsg = currentMes;
+                            found = true;
+                        }
                         break;
                     }
                 }
             }
-        } catch(e) { console.log("清理系统消息失败", e); }
+            
+            if (found) break; // 找到了立刻跳出死循环
+
+            // 如果还在生成，我们不增加 attempts，让思考模型随便想多久都行
+            if (!window.is_generating) {
+                attempts++;
+            }
+        }
+
+        if (!found) {
+            toastr.error("抓取超时：没有检测到AI生成新的回复", "微信推送");
+            return;
+        }
+
+        // 5. 暴力清洗：唯一只做一件事，删掉 <think> 标签！动作、表情全保留！
+        let pushContent = newAiMsg.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+        if (!pushContent) pushContent = "收到一条消息（可能仅包含思考过程）。";
+
+        // 6. 获取角色名作为标题
+        let charName = "AI";
+        const context = typeof getContext === 'function' ? getContext() : {};
+        if (context.name2) charName = context.name2;
+        else if (window.name2) charName = window.name2;
+        else if (window.characters && window.this_chid !== undefined) charName = window.characters[window.this_chid].name;
+
+        toastr.info("内容已抓取，正在推送到微信...", "微信推送");
+
+        // 7. 回归你验证过绝对能发送的纯净 POST 网络请求
+        await fetch("http://www.pushplus.plus/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                token: token,
+                title: `来自 ${charName} 的新消息`,
+                content: pushContent
+            })
+        });
+
+        toastr.success("微信推送发送成功！", "微信推送");
+
+        // 8. 擦屁股：找到刚才加进去的“[系统隐形指令：]”并把它删掉，保持聊天干净
+        try {
+            const chatArr = window.chat;
+            let deleted = false;
+            if (chatArr && chatArr.length > 0) {
+                for (let i = chatArr.length - 1; i >= Math.max(0, chatArr.length - 5); i--) {
+                    if (chatArr[i].is_system && chatArr[i].mes.includes("系统隐形指令")) {
+                        chatArr.splice(i, 1);
+                        deleted = true;
+                        break;
+                    }
+                }
+            }
+            if (deleted) {
+                if (typeof window.saveChatDebounced === 'function') window.saveChatDebounced();
+                if (typeof window.printMessages === 'function') window.printMessages();
+            }
+        } catch(e) { console.warn("清理系统消息失败", e); }
 
     } catch (error) {
-        console.error(error);
-        toastr.error("前端执行出现异常，请查看控制台", "微信推送");
+        console.error("微信推送执行出错:", error);
+        toastr.error("执行过程发生错误，请查看控制台", "微信推送");
     }
 }
 

@@ -1,10 +1,7 @@
 import { extension_settings } from "../../../extensions.js";
 import { executeSlashCommands } from "../../../slash-commands.js";
 
-// 注意：这里的名字必须和你的 Github 仓库名完全一致！
 const EXT_NAME = "WeChatPush";
-const EXT_PATH = `scripts/extensions/third-party/${EXT_NAME}`;
-
 let pushTimer = null;
 
 if (!extension_settings[EXT_NAME]) {
@@ -18,7 +15,7 @@ async function sendWechatMessage() {
         return;
     }
 
-    const cmd = `/remind [系统：当前时间 {{time}}。请主动发一条消息。] | /generate | /fetch url="http://www.pushplus.plus/send" method="POST" body="{\\"token\\":\\"${token}\\",\\"title\\":\\"{{char}}的留言\\",\\"content\\":\\"{{lastMessage}}\\"}" headers="{\\"Content-Type\\":\\"application/json\\"}"`;
+    const cmd = `/remind [系统：当前时间 {{time_UTC＋8}}。请主动发一条消息。] | /generate | /fetch url="http://www.pushplus.plus/send" method="POST" body="{\\"token\\":\\"${token}\\",\\"title\\":\\"{{char}}的留言\\",\\"content\\":\\"{{lastMessage}}\\"}" headers="{\\"Content-Type\\":\\"application/json\\"}"`;
     
     toastr.info("正在生成并发送...", "微信推送");
     await executeSlashCommands(cmd);
@@ -39,19 +36,48 @@ function manageTimer() {
     }
 }
 
+// 将 HTML 界面直接写死在变量里，绕过系统的文件读取
+const panelHtml = `
+<div class="extension-settings" id="wechat_push_settings">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>微信定时推送</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 10px;">
+                <label>Token:</label>
+                <input type="text" id="wp_token" class="text_pole" placeholder="填入PushPlus Token" style="flex: 1;">
+            </div>
+            <hr>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 10px;">
+                <label style="display: flex; align-items: center; gap: 5px;">
+                    <input type="checkbox" id="wp_enable">
+                    <span>开启定时发送</span>
+                </label>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 10px;">
+                <label>间隔(分钟):</label>
+                <input type="number" id="wp_interval" class="text_pole" min="1" style="flex: 1;">
+            </div>
+            <hr>
+            <button id="wp_send_now" class="menu_button">立即发送微信</button>
+        </div>
+    </div>
+</div>
+`;
+
 jQuery(async () => {
     try {
-        // 标准的酒馆扩展 UI 加载流程：先拉取 HTML 和 CSS，再塞进面板
-        const html = await $.get(`${EXT_PATH}/settings.html`);
-        $('head').append(`<link rel="stylesheet" href="${EXT_PATH}/style.css">`);
-        $('#extensions_settings').append(html);
+        // 直接把界面塞进酒馆的扩展设置区域
+        $('#extensions_settings').append(panelHtml);
 
-        // 恢复之前保存的设置数据
+        // 读取保存的参数
         $('#wp_token').val(extension_settings[EXT_NAME].token);
         $('#wp_interval').val(extension_settings[EXT_NAME].interval);
         $('#wp_enable').prop('checked', extension_settings[EXT_NAME].enabled);
 
-        // 绑定事件：修改输入框时自动保存
+        // 绑定动作
         $('#wp_token').on('input', function() {
             extension_settings[EXT_NAME].token = $(this).val();
         });
@@ -68,12 +94,12 @@ jQuery(async () => {
 
         $('#wp_send_now').on('click', sendWechatMessage);
 
-        // 初始化定时器
+        // 启动定时器
         if (extension_settings[EXT_NAME].enabled) {
             manageTimer();
         }
+        
     } catch (error) {
-        console.error("[WeChatPush] 加载失败:", error);
-        toastr.error("微信推送面板加载失败，请检查仓库名是否严格为 WeChatPush", "错误");
+        console.error("加载失败:", error);
     }
 });

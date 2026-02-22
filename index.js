@@ -1,5 +1,6 @@
-import { extension_settings } from "../../../extensions.js";
-import { executeSlashCommands } from "../../../slash-commands.js";
+// 【关键修复】直接使用绝对路径获取，无视扩展被安装在哪！
+import { extension_settings } from "/scripts/extensions.js";
+import { executeSlashCommands } from "/scripts/slash-commands.js";
 
 const EXT_NAME = "WeChatPush";
 let pushTimer = null;
@@ -15,7 +16,6 @@ async function sendWechatMessage() {
         return;
     }
     
-    // 已经替换为你测试有效的 {{time_UTC+8}}
     const cmd = `/remind [系统：当前时间 {{time_UTC+8}}。请主动发一条消息。] | /generate | /fetch url="http://www.pushplus.plus/send" method="POST" body="{\\"token\\":\\"${token}\\",\\"title\\":\\"{{char}}的留言\\",\\"content\\":\\"{{lastMessage}}\\"}" headers="{\\"Content-Type\\":\\"application/json\\"}"`;
     
     toastr.info("正在生成并发送...", "微信推送");
@@ -39,7 +39,7 @@ function manageTimer() {
 
 // 轮询探测器：等待酒馆把 index.html 渲染到页面上
 const checkUI = setInterval(() => {
-    // 只要检测到界面上的 Token 输入框出现了，就说明面板加载完了
+    // 检测界面是否已经被酒馆吐出来了
     if ($('#wp_token').length > 0) {
         clearInterval(checkUI); // 停止轮询
         
@@ -70,4 +70,4 @@ const checkUI = setInterval(() => {
             manageTimer();
         }
     }
-}, 100); // 每 0.1 秒看一次界面出来了没
+}, 100);

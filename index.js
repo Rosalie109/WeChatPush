@@ -51,9 +51,6 @@ function initWeChatPushUI(container) {
 
     container.insertAdjacentHTML('beforeend', html);
 
-    // ==========================================
-    // 完全照搬 Word 文档里的原生 JS 展开逻辑
-    // ==========================================
     const drawerToggle = document.querySelector('#wechat-push-extension .inline-drawer-toggle');
     if (drawerToggle) {
         drawerToggle.addEventListener('click', function(e) {
@@ -79,9 +76,7 @@ function initWeChatPushUI(container) {
             }
         });
     }
-    // ==========================================
 
-    // 其他事件绑定
     $('#wp_token').on('input', function() {
         extension_settings[EXT_NAME].token = $(this).val();
     });
@@ -110,11 +105,33 @@ async function sendWechatMessage() {
         return;
     }
     
- const cmd = `/sys [系统：当前时间 {{time_UTC+8}}。请主动发一条消息。] | /gen | /fetch url="http://www.pushplus.plus/send" method="POST" body="{\\"token\\":\\"${token}\\",\\"title\\":\\"{{char}}的留言\\",\\"content\\":\\"{{lastMessage}}\\"}" headers="{\\"Content-Type\\":\\"application/json\\"}"`;
-    
     toastr.info("正在生成并发送...", "微信推送");
-    await executeSlashCommands(cmd);
-    toastr.success("微信推送指令已触发", "微信推送");
+
+    try {
+        // 1. 只使用酒馆原生存在的 /sys 和 /gen，彻底弃用第三方 /fetch 宏
+        await executeSlashCommands(`/sys [系统：当前时间 {{time_UTC+8}}。请主动发一条消息。] | /gen`);
+
+        // 2. 抓取生成的上下文
+        const chatArr = window.chat;
+        const lastMsg = (chatArr && chatArr.length > 0) ? chatArr[chatArr.length - 1].mes : "无内容";
+        const charName = (window.characters && window.this_chid !== undefined) ? window.characters[window.this_chid].name : "AI";
+
+        // 3. 使用原生 JS 网络请求直接发给 PushPlus，不再依赖酒馆的斜杠命令解析
+        await fetch("http://www.pushplus.plus/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                token: token,
+                title: `来自 ${charName} 的留言`,
+                content: lastMsg
+            })
+        });
+
+        toastr.success("微信推送发送成功", "微信推送");
+    } catch (error) {
+        console.error(error);
+        toastr.error("推送失败", "微信推送");
+    }
 }
 
 function manageTimer() {
@@ -130,4 +147,3 @@ function manageTimer() {
         toastr.info("定时推送已关闭", "微信推送");
     }
 }
-

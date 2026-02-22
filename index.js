@@ -110,7 +110,7 @@ async function sendWechatMessage() {
         return;
     }
     
-    const cmd = `/remind [系统：当前时间 {{time_UTC+8}}。请主动发一条消息。] | /generate | /fetch url="http://www.pushplus.plus/send" method="POST" body="{\\"token\\":\\"${token}\\",\\"title\\":\\"{{char}}的留言\\",\\"content\\":\\"{{lastMessage}}\\"}" headers="{\\"Content-Type\\":\\"application/json\\"}"`;
+ const cmd = `/sys [系统：当前时间 {{time_UTC+8}}。请主动发一条消息。] | /gen | /fetch url="http://www.pushplus.plus/send" method="POST" body="{\\"token\\":\\"${token}\\",\\"title\\":\\"{{char}}的留言\\",\\"content\\":\\"{{lastMessage}}\\"}" headers="{\\"Content-Type\\":\\"application/json\\"}"`;
     
     toastr.info("正在生成并发送...", "微信推送");
     await executeSlashCommands(cmd);
@@ -130,3 +130,4 @@ function manageTimer() {
         toastr.info("定时推送已关闭", "微信推送");
     }
 }
+

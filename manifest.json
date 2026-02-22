@@ -1,8 +1,9 @@
 {
-    "name": "wechat_push",
+    "name": "WeChatPush",
     "display_name": "微信定时推送",
     "description": "自定义微信消息推送工具",
     "version": "1.0.0",
     "author": "Custom",
-    "main": "index.js"
+    "js": "index.js",
+    "loading_order": 1
 }

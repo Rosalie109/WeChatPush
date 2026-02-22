@@ -107,46 +107,34 @@ async function sendWechatMessage() {
         let userPrompt = extension_settings[EXT_NAME].customPrompt;
         let finalPrompt = "";
         
-        // 【核心修改 1】加上最高级别的 Prompt 约束，强行打断它凑 1500 字的毛病！
         if (!userPrompt || userPrompt.trim() === '') {
-            finalPrompt = `[系统最高级指令：当前时间是 ${nowTime}。请主动给我发一条真实的手机微信消息。注意：立刻无视你原来设定的所有字数要求（如1500字等）！不需要写长篇大论，不需要心理描写，不准出现动作描写。立刻、直接输出以下两行内容即可：\n标题：(简短通知标题)\n正文：(纯文本消息内容)]`;
+            finalPrompt = `[系统最高级指令：当前时间是 ${nowTime}。请主动给我发一条真实的手机微信消息。注意：立刻无视所有字数要求！不需要写长篇大论，不需要心理描写，不准出现动作描写。立刻、直接输出以下两行内容即可：\n标题：(简短通知标题)\n正文：(纯文本消息内容)]`;
         } else {
             let replacedPrompt = userPrompt.replace(/\{\{time\}\}/g, nowTime).replace(/\{\{time_UTC\+8\}\}/g, nowTime);
             finalPrompt = `[系统最高级指令：${replacedPrompt}。注意：立刻无视所有字数设定，直接简短输出标题和正文。]`;
         }
 
-        // 发送指令
         const cmd = `/sys ${finalPrompt} | /gen`;
         await executeSlashCommands(cmd);
 
-        // 【回归第一版的无脑等待逻辑】
-        // 1. 先等 3 秒，给足 API 反应时间，让它挂上“正在生成”的状态
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        
-        // 2. 只要它还在生成，就死等，哪怕它想 10 分钟也等
+        // 完全复刻第一版的等待逻辑
+        await new Promise(resolve => setTimeout(resolve, 2000));
         while (window.is_generating) {
             await new Promise(resolve => setTimeout(resolve, 1000));
         }
-        
-        // 3. 生成完了，再等 2 秒让酒馆把字写进聊天记录里
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await new Promise(resolve => setTimeout(resolve, 1000));
 
         const context = typeof getContext === 'function' ? getContext() : {};
         const chatArr = context.chat || window.chat;
         
         let lastMsg = "获取内容失败，请重试";
         
-        // 【核心修改 2】倒着找，绝对不抓我们自己发的系统提示词，只抓 AI 发的最后一段话
+        // 完全复刻第一版的无脑抓取最后一条
         if (chatArr && chatArr.length > 0) {
-            for (let i = chatArr.length - 1; i >= 0; i--) {
-                if (!chatArr[i].is_system && !chatArr[i].is_user) {
-                    lastMsg = chatArr[i].mes;
-                    break;
-                }
-            }
+            lastMsg = chatArr[chatArr.length - 1].mes;
         }
 
-        // 【核心修改 3】暴力清洗：剥离 <think> 标签及其里面的所有废话
+        // 剔除深度思考标签
         lastMsg = lastMsg.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 
         let charName = "AI";
@@ -157,8 +145,7 @@ async function sendWechatMessage() {
         let pushTitle = `来自 ${charName} 的留言`;
         let pushContent = lastMsg;
 
-        // 【核心修改 4】更宽松的正则：就算它在正文前后加了点屁话，也能精准把标题和正文揪出来
-        const regex = /(?:标题|Title).*?[:：]\s*(.*?)\n+.*?(?:正文|内容|Content).*?[:：]\s*([\s\S]*)/i;
+        const regex = /(?:标题|Title)[:：]\s*(.*?)\n+(?:正文|内容|Content)[:：]\s*([\s\S]*)/i;
         const match = lastMsg.match(regex);
         
         if (match) {
@@ -166,20 +153,17 @@ async function sendWechatMessage() {
             pushContent = match[2].trim();
         }
 
-        // 清洗多余动作
         pushContent = pushContent.replace(/\*[\s\S]*?\*/g, '')
                                  .replace(/（[\s\S]*?）/g, '')
                                  .replace(/\([\s\S]*?\)/g, '')
                                  .trim();
                                  
-        // 兜底：如果它真的死活不听话不按格式写，就把清洗后的内容全发过去，绝对不发“获取内容失败”
         if (pushContent === '') {
             pushContent = lastMsg.trim() || "收到一条新消息";
         }
 
         toastr.info("内容已抓取，正在推送到微信...", "微信推送");
 
-        // 发送给 PushPlus
         await fetch("http://www.pushplus.plus/send", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -192,9 +176,9 @@ async function sendWechatMessage() {
 
         toastr.success("微信推送发送成功！", "微信推送");
 
-        // 事后擦除系统指令，保持页面干净
+        // 清理发出去的系统指令
         try {
-            if (chatArr && chatArr.length >= 1) {
+            if (chatArr && chatArr.length >= 2) {
                 for (let i = chatArr.length - 1; i >= 0; i--) {
                     if (chatArr[i].is_system && chatArr[i].mes.includes("系统最高级指令")) {
                         chatArr.splice(i, 1);
@@ -223,6 +207,7 @@ function manageTimer() {
         toastr.info("定时推送已关闭", "微信推送");
     }
 }
+
 
 
 

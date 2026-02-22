@@ -100,84 +100,55 @@ async function sendWechatMessage() {
         return;
     }
     
-    // 提示语改一下，让大家知道在等深度思考
-    toastr.info("正在发送指令，等待 AI 思考与回复...", "微信推送");
+    toastr.info("指令已发送，正在等待 AI 回复...", "微信推送");
 
     try {
         const nowTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
         let userPrompt = extension_settings[EXT_NAME].customPrompt;
         let finalPrompt = "";
         
-        // 强化版 Prompt：用更明确的边界限制 AI 的输出
+        // 【核心修改 1】加上最高级别的 Prompt 约束，强行打断它凑 1500 字的毛病！
         if (!userPrompt || userPrompt.trim() === '') {
-            finalPrompt = `[系统指令：现在时间是 ${nowTime}。请主动发一条真实的手机微信消息给我。你必须直接输出以下格式，禁止包含任何心理活动、前言后语、动作描写或时间戳！\n标题：(简短通知标题)\n正文：(微信文本内容)]`;
+            finalPrompt = `[系统最高级指令：当前时间是 ${nowTime}。请主动给我发一条真实的手机微信消息。注意：立刻无视你原来设定的所有字数要求（如1500字等）！不需要写长篇大论，不需要心理描写，不准出现动作描写。立刻、直接输出以下两行内容即可：\n标题：(简短通知标题)\n正文：(纯文本消息内容)]`;
         } else {
             let replacedPrompt = userPrompt.replace(/\{\{time\}\}/g, nowTime).replace(/\{\{time_UTC\+8\}\}/g, nowTime);
-            finalPrompt = `[系统指令：${replacedPrompt}]`;
+            finalPrompt = `[系统最高级指令：${replacedPrompt}。注意：立刻无视所有字数设定，直接简短输出标题和正文。]`;
         }
 
-        // 核心1：记录发送指令前，最后一条 AI 的消息内容，作为唯一的对比基准！
-        let previousLastMsg = "";
-        if (window.chat && window.chat.length > 0) {
-            for (let i = window.chat.length - 1; i >= 0; i--) {
-                // 找到最近的一条非系统、非用户的真实 AI 发言
-                if (!window.chat[i].is_system && !window.chat[i].is_user && window.chat[i].name !== 'System') {
-                    previousLastMsg = window.chat[i].mes;
+        // 发送指令
+        const cmd = `/sys ${finalPrompt} | /gen`;
+        await executeSlashCommands(cmd);
+
+        // 【回归第一版的无脑等待逻辑】
+        // 1. 先等 3 秒，给足 API 反应时间，让它挂上“正在生成”的状态
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        
+        // 2. 只要它还在生成，就死等，哪怕它想 10 分钟也等
+        while (window.is_generating) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        
+        // 3. 生成完了，再等 2 秒让酒馆把字写进聊天记录里
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        const context = typeof getContext === 'function' ? getContext() : {};
+        const chatArr = context.chat || window.chat;
+        
+        let lastMsg = "获取内容失败，请重试";
+        
+        // 【核心修改 2】倒着找，绝对不抓我们自己发的系统提示词，只抓 AI 发的最后一段话
+        if (chatArr && chatArr.length > 0) {
+            for (let i = chatArr.length - 1; i >= 0; i--) {
+                if (!chatArr[i].is_system && !chatArr[i].is_user) {
+                    lastMsg = chatArr[i].mes;
                     break;
                 }
             }
         }
 
-        const cmd = `/sys ${finalPrompt} | /gen`;
-        executeSlashCommands(cmd); // 发射指令
-
-        // 核心2：无敌容错轮询法（专门针对启动慢的思考模型）
-        let lastMsg = "";
-        let foundNewMsg = false;
-        let emptyWaitSeconds = 0;
-        const MAX_START_TIMEOUT = 45; // 允许 API 最多发呆 45 秒不启动
-
-        while (emptyWaitSeconds < MAX_START_TIMEOUT) {
-            await new Promise(r => setTimeout(r, 1000));
-            
-            if (window.is_generating) {
-                // 只要 AI 还在生成或者思考，倒计时就死死冻结！永远不超时！
-                emptyWaitSeconds = 0; 
-                continue; 
-            } else {
-                // 如果没有在生成，计时器才开始走
-                emptyWaitSeconds++;
-                
-                // 去检查有没有出现新的 AI 消息
-                const chatArr = window.chat || [];
-                if (chatArr.length > 0) {
-                    for (let i = chatArr.length - 1; i >= 0; i--) {
-                        const msg = chatArr[i];
-                        if (!msg.is_system && !msg.is_user && msg.name !== 'System') {
-                            // 只要找到的这条 AI 消息，跟一开始记录的旧消息不一样，就是新抓到的！
-                            if (msg.mes !== previousLastMsg && msg.mes.trim() !== "") {
-                                lastMsg = msg.mes;
-                                foundNewMsg = true;
-                            }
-                            break; 
-                        }
-                    }
-                }
-                
-                if (foundNewMsg) break; // 抓到了，立刻跳出死循环！
-            }
-        }
-
-        // 如果等了 45 秒 API 还是没启动生成，才判定为彻底失败
-        if (!foundNewMsg) {
-            toastr.error("抓取失败，API 响应超时或未输出新内容", "微信推送");
-            return;
-        }
-
-        // 核心3：暴力剥离深度思考标签
+        // 【核心修改 3】暴力清洗：剥离 <think> 标签及其里面的所有废话
         lastMsg = lastMsg.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 
-        const context = typeof getContext === 'function' ? getContext() : {};
         let charName = "AI";
         if (context.name2) charName = context.name2;
         else if (window.name2) charName = window.name2;
@@ -186,7 +157,7 @@ async function sendWechatMessage() {
         let pushTitle = `来自 ${charName} 的留言`;
         let pushContent = lastMsg;
 
-        // 核心4：提取内容，允许周围有杂乱空格
+        // 【核心修改 4】更宽松的正则：就算它在正文前后加了点屁话，也能精准把标题和正文揪出来
         const regex = /(?:标题|Title).*?[:：]\s*(.*?)\n+.*?(?:正文|内容|Content).*?[:：]\s*([\s\S]*)/i;
         const match = lastMsg.match(regex);
         
@@ -195,15 +166,20 @@ async function sendWechatMessage() {
             pushContent = match[2].trim();
         }
 
+        // 清洗多余动作
         pushContent = pushContent.replace(/\*[\s\S]*?\*/g, '')
                                  .replace(/（[\s\S]*?）/g, '')
                                  .replace(/\([\s\S]*?\)/g, '')
                                  .trim();
                                  
-        if (pushContent === '') pushContent = lastMsg.trim() || "收到一条新消息"; 
+        // 兜底：如果它真的死活不听话不按格式写，就把清洗后的内容全发过去，绝对不发“获取内容失败”
+        if (pushContent === '') {
+            pushContent = lastMsg.trim() || "收到一条新消息";
+        }
 
         toastr.info("内容已抓取，正在推送到微信...", "微信推送");
 
+        // 发送给 PushPlus
         await fetch("http://www.pushplus.plus/send", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -216,12 +192,11 @@ async function sendWechatMessage() {
 
         toastr.success("微信推送发送成功！", "微信推送");
 
-        // 阅后即焚清理系统指令
+        // 事后擦除系统指令，保持页面干净
         try {
-            const chatArr = window.chat;
             if (chatArr && chatArr.length >= 1) {
                 for (let i = chatArr.length - 1; i >= 0; i--) {
-                    if (chatArr[i].is_system && chatArr[i].mes.includes("系统指令")) {
+                    if (chatArr[i].is_system && chatArr[i].mes.includes("系统最高级指令")) {
                         chatArr.splice(i, 1);
                         if (typeof window.printMessages === 'function') window.printMessages();
                         break;
@@ -248,6 +223,7 @@ function manageTimer() {
         toastr.info("定时推送已关闭", "微信推送");
     }
 }
+
 
 
 

@@ -93,7 +93,6 @@ function initWeChatPushUI(container) {
         manageTimer();
     }
 }
-
 async function sendWechatMessage() {
     const token = extension_settings[EXT_NAME].token;
     if (!token) {
@@ -101,6 +100,7 @@ async function sendWechatMessage() {
         return;
     }
     
+    // 提示语改一下，让大家知道在等深度思考
     toastr.info("正在发送指令，等待 AI 思考与回复...", "微信推送");
 
     try {
@@ -116,11 +116,12 @@ async function sendWechatMessage() {
             finalPrompt = `[系统指令：${replacedPrompt}]`;
         }
 
-        // 核心1：记录当前最后一条 AI 消息，用来作为对比的“基准”
+        // 核心1：记录发送指令前，最后一条 AI 的消息内容，作为唯一的对比基准！
         let previousLastMsg = "";
         if (window.chat && window.chat.length > 0) {
             for (let i = window.chat.length - 1; i >= 0; i--) {
-                if (!window.chat[i].is_system && !window.chat[i].is_user) {
+                // 找到最近的一条非系统、非用户的真实 AI 发言
+                if (!window.chat[i].is_system && !window.chat[i].is_user && window.chat[i].name !== 'System') {
                     previousLastMsg = window.chat[i].mes;
                     break;
                 }
@@ -128,46 +129,52 @@ async function sendWechatMessage() {
         }
 
         const cmd = `/sys ${finalPrompt} | /gen`;
-        executeSlashCommands(cmd);
+        executeSlashCommands(cmd); // 发射指令
 
-        let waitStart = 0;
-        while (!window.is_generating && waitStart < 50) {
-            await new Promise(r => setTimeout(r, 100));
-            waitStart++;
-        }
-
-        while (window.is_generating) {
-            await new Promise(r => setTimeout(r, 1000));
-        }
-        
-        await new Promise(resolve => setTimeout(resolve, 1500));
-
-        // 核心2：暴力抓取最新回复
-        const chatArr = window.chat || [];
+        // 核心2：无敌容错轮询法（专门针对启动慢的思考模型）
         let lastMsg = "";
         let foundNewMsg = false;
+        let emptyWaitSeconds = 0;
+        const MAX_START_TIMEOUT = 45; // 允许 API 最多发呆 45 秒不启动
 
-        if (chatArr && chatArr.length > 0) {
-            for (let i = chatArr.length - 1; i >= 0; i--) {
-                const msg = chatArr[i];
-                // 排除系统指令和用户消息
-                if (!msg.is_system && !msg.is_user && msg.name !== 'System') {
-                    // 只要和生成前的最后一条消息不一样，就是新抓到的
-                    if (msg.mes !== previousLastMsg) {
-                        lastMsg = msg.mes;
-                        foundNewMsg = true;
+        while (emptyWaitSeconds < MAX_START_TIMEOUT) {
+            await new Promise(r => setTimeout(r, 1000));
+            
+            if (window.is_generating) {
+                // 只要 AI 还在生成或者思考，倒计时就死死冻结！永远不超时！
+                emptyWaitSeconds = 0; 
+                continue; 
+            } else {
+                // 如果没有在生成，计时器才开始走
+                emptyWaitSeconds++;
+                
+                // 去检查有没有出现新的 AI 消息
+                const chatArr = window.chat || [];
+                if (chatArr.length > 0) {
+                    for (let i = chatArr.length - 1; i >= 0; i--) {
+                        const msg = chatArr[i];
+                        if (!msg.is_system && !msg.is_user && msg.name !== 'System') {
+                            // 只要找到的这条 AI 消息，跟一开始记录的旧消息不一样，就是新抓到的！
+                            if (msg.mes !== previousLastMsg && msg.mes.trim() !== "") {
+                                lastMsg = msg.mes;
+                                foundNewMsg = true;
+                            }
+                            break; 
+                        }
                     }
-                    break;
                 }
+                
+                if (foundNewMsg) break; // 抓到了，立刻跳出死循环！
             }
         }
 
+        // 如果等了 45 秒 API 还是没启动生成，才判定为彻底失败
         if (!foundNewMsg) {
-            toastr.error("抓取失败，AI 未输出新内容", "微信推送");
+            toastr.error("抓取失败，API 响应超时或未输出新内容", "微信推送");
             return;
         }
 
-        // 核心3：剥离深度思考标签
+        // 核心3：暴力剥离深度思考标签
         lastMsg = lastMsg.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 
         const context = typeof getContext === 'function' ? getContext() : {};
@@ -179,7 +186,7 @@ async function sendWechatMessage() {
         let pushTitle = `来自 ${charName} 的留言`;
         let pushContent = lastMsg;
 
-        // 核心4：更宽容的正则，允许标题和正文周围有额外的空格或换行
+        // 核心4：提取内容，允许周围有杂乱空格
         const regex = /(?:标题|Title).*?[:：]\s*(.*?)\n+.*?(?:正文|内容|Content).*?[:：]\s*([\s\S]*)/i;
         const match = lastMsg.match(regex);
         
@@ -209,7 +216,9 @@ async function sendWechatMessage() {
 
         toastr.success("微信推送发送成功！", "微信推送");
 
+        // 阅后即焚清理系统指令
         try {
+            const chatArr = window.chat;
             if (chatArr && chatArr.length >= 1) {
                 for (let i = chatArr.length - 1; i >= 0; i--) {
                     if (chatArr[i].is_system && chatArr[i].mes.includes("系统指令")) {
@@ -239,6 +248,7 @@ function manageTimer() {
         toastr.info("定时推送已关闭", "微信推送");
     }
 }
+
 
 
 

@@ -1,0 +1,10 @@
+#wechat_push_settings .wp-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+    gap: 10px;
+}
+#wechat_push_settings .text_pole {
+    flex: 1;
+}

@@ -101,7 +101,8 @@ async function sendWechatMessage() {
         return;
     }
     
-    toastr.info("正在触发 AI 生成...", "微信推送");
+    // 提示语改一下，因为思考模型真的很慢，要有耐心
+    toastr.info("正在发送指令，等待 AI 思考与回复...", "微信推送");
 
     try {
         const nowTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
@@ -115,50 +116,61 @@ async function sendWechatMessage() {
             finalPrompt = `[系统指令：${replacedPrompt}]`;
         }
 
+        // 核心1：提前记录聊天列表长度，这样才能分辨谁是“新来”的
+        const initialLength = window.chat ? window.chat.length : 0;
         const cmd = `/sys ${finalPrompt} | /gen`;
-        await executeSlashCommands(cmd);
+        
+        // 发送命令
+        executeSlashCommands(cmd);
 
-        // 【关键修复 1】增强等待机制，必须等到 AI 真正开始生成
-        let waitStart = 0;
-        while (!window.is_generating && waitStart < 50) {
-            await new Promise(r => setTimeout(r, 100));
-            waitStart++;
-        }
-
-        // 死等生成结束
-        while (window.is_generating) {
+        let lastMsg = "";
+        let foundAiMsg = false;
+        let retryCount = 0;
+        
+        // 核心2：智能轮询！最高等待 120 秒（给足深度思考模型的时间）
+        while (!foundAiMsg && retryCount < 120) {
             await new Promise(r => setTimeout(r, 1000));
-        }
-        
-        // 多等 1.5 秒，确保酒馆已经把生成的文本完全写进聊天记录里
-        await new Promise(resolve => setTimeout(resolve, 1500));
-
-        const context = typeof getContext === 'function' ? getContext() : {};
-        const chatArr = context.chat || window.chat;
-        
-        let charName = "AI";
-        if (context.name2) charName = context.name2;
-        else if (window.name2) charName = window.name2;
-        else if (window.characters && window.this_chid !== undefined) charName = window.characters[window.this_chid].name;
-
-        let lastMsg = "获取内容失败，请重试";
-        
-        // 【关键修复 2】倒序查找，直到找到第一条属于 AI 的回复，跳过刚刚发的系统指令
-        if (chatArr && chatArr.length > 0) {
-            for (let i = chatArr.length - 1; i >= 0; i--) {
-                if (!chatArr[i].is_system && !chatArr[i].is_user) {
-                    lastMsg = chatArr[i].mes;
+            retryCount++;
+            
+            // 必须等酒馆的“正在生成”状态彻底结束才去抓
+            if (!window.is_generating) {
+                const chatArr = window.chat || [];
+                // 倒序检查所有刚才“新生成”的消息
+                for (let i = chatArr.length - 1; i >= initialLength; i--) {
+                    const msg = chatArr[i];
+                    
+                    // 绝杀护盾：但凡包含“系统指令”这几个字的，绝对不抓！直接跳过！
+                    if (msg.mes.includes("系统指令") || msg.mes.includes("你自拟的通知标题")) continue;
+                    
+                    // 跳过系统底层消息和用户自己的消息
+                    if (msg.is_user || msg.is_system || msg.name === 'System') continue;
+                    
+                    // 过五关斩六将，这才是 AI 真正的回复！
+                    lastMsg = msg.mes;
+                    foundAiMsg = true;
                     break;
                 }
             }
         }
 
-        // 【关键修复 3】清理部分带深度思考模型的 <think> 标签内容
+        if (!foundAiMsg) {
+            toastr.error("等待 AI 回复超时，或者没抓取到新消息", "微信推送");
+            return;
+        }
+
+        // 核心3：彻底清洗深度思考模型特有的 <think> 标签及其内容
         lastMsg = lastMsg.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+
+        const context = typeof getContext === 'function' ? getContext() : {};
+        let charName = "AI";
+        if (context.name2) charName = context.name2;
+        else if (window.name2) charName = window.name2;
+        else if (window.characters && window.this_chid !== undefined) charName = window.characters[window.this_chid].name;
 
         let pushTitle = `来自 ${charName} 的留言`;
         let pushContent = lastMsg;
 
+        // 正则现在只能抓到干干净净的回复了
         const regex = /(?:标题|Title)[:：]\s*(.*?)\n+(?:正文|内容|Content)[:：]\s*([\s\S]*)/i;
         const match = lastMsg.match(regex);
         
@@ -167,15 +179,13 @@ async function sendWechatMessage() {
             pushContent = match[2].trim();
         }
 
+        // 继续剃掉可能残留的动作描写
         pushContent = pushContent.replace(/\*[\s\S]*?\*/g, '')
                                  .replace(/（[\s\S]*?）/g, '')
                                  .replace(/\([\s\S]*?\)/g, '')
                                  .trim();
                                  
-        if (pushContent === '') {
-            // 如果全部被清理光了，就把剥离了 think 标签的原话发出去
-            pushContent = lastMsg; 
-        }
+        if (pushContent === '') pushContent = lastMsg; 
 
         toastr.info("内容已抓取，正在推送到微信...", "微信推送");
 
@@ -191,17 +201,15 @@ async function sendWechatMessage() {
 
         toastr.success("微信推送发送成功！", "微信推送");
 
-        // 【关键修复 4】安全地倒序清理阅后即焚的系统指令
+        // 核心4：阅后即焚，事后清理发出去的系统指令，聊天界面清清爽爽
         try {
-            if (chatArr && chatArr.length >= 1) {
-                for (let i = chatArr.length - 1; i >= 0; i--) {
-                    if (chatArr[i].is_system && chatArr[i].mes.includes("系统指令")) {
-                        chatArr.splice(i, 1);
-                        if (typeof window.printMessages === 'function') {
-                            window.printMessages(); 
-                        }
-                        break; // 删掉一条就停下
-                    }
+            const chatArr = window.chat;
+            // 也是倒序往回找我们刚发出去的指令，找到了就删掉并刷新界面
+            for (let i = chatArr.length - 1; i >= initialLength; i--) {
+                if (chatArr[i].mes.includes("系统指令")) {
+                    chatArr.splice(i, 1);
+                    if (typeof window.printMessages === 'function') window.printMessages();
+                    break;
                 }
             }
         } catch(e) { console.log("清理系统消息失败", e); }
@@ -224,4 +232,5 @@ function manageTimer() {
         toastr.info("定时推送已关闭", "微信推送");
     }
 }
+
 

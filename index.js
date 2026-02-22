@@ -150,7 +150,6 @@ async function sendWechatMessage() {
         
         let lastMsg = "获取内容失败，请重试";
         if (chatArr && chatArr.length > 0) {
-            // 倒着找，跳过刚才发的系统提示词，找到第一条 AI 发的话
             for (let i = chatArr.length - 1; i >= 0; i--) {
                 if (!chatArr[i].is_system && !chatArr[i].is_user && chatArr[i].name !== 'System') {
                     lastMsg = chatArr[i].mes;
@@ -159,8 +158,12 @@ async function sendWechatMessage() {
             }
         }
 
-        // 5. 暴力清洗：只删 <think> 标签，保留动作和文字
+        // 5. 暴力清洗：剥离 <think> 标签，剃除括号动作，完全保留纯文字和表情
         let pushContent = lastMsg.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+        pushContent = pushContent.replace(/\*[\s\S]*?\*/g, '')
+                                 .replace(/（[\s\S]*?）/g, '')
+                                 .replace(/\([\s\S]*?\)/g, '')
+                                 .trim();
 
         if (!pushContent || pushContent === '') {
             pushContent = "收到一条空消息。";
@@ -176,20 +179,22 @@ async function sendWechatMessage() {
 
         toastr.info("内容已提取，正在推送到微信...", "微信推送");
 
-        // 7. 发送到 PushPlus
-        await fetch("http://www.pushplus.plus/send", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                token: token,
-                title: pushTitle,
-                content: pushContent
-            })
+        // 7. 终极网络请求方案：使用 HTTPS + GET + no-cors 强制穿透跨域拦截
+        const pushUrl = "https://www.pushplus.plus/send";
+        const params = new URLSearchParams({
+            token: token,
+            title: pushTitle,
+            content: pushContent
         });
 
-        toastr.success("微信推送发送成功！", "微信推送");
+        await fetch(`${pushUrl}?${params.toString()}`, {
+            method: 'GET',
+            mode: 'no-cors' // 关键所在：彻底无视浏览器的跨域报错
+        });
 
-        // 8. 事后清理刚才发在公屏的系统指令 (发了就发了，如果能删掉最好，删不掉也不影响功能)
+        toastr.success("微信推送指令已发出！", "微信推送");
+
+        // 8. 事后清理刚才发在公屏的系统指令
         try {
             if (chatArr && chatArr.length >= 1) {
                 for (let i = chatArr.length - 1; i >= 0; i--) {
@@ -204,7 +209,7 @@ async function sendWechatMessage() {
 
     } catch (error) {
         console.error(error);
-        toastr.error("推送过程发生错误，请检查", "微信推送");
+        toastr.error("前端执行出现异常，请查看控制台", "微信推送");
     }
 }
 

@@ -51,40 +51,52 @@ function initWeChatPushUI(container) {
 
     container.insertAdjacentHTML('beforeend', html);
 
-    // --- 核心修复：事件委托 + 阻止冒泡 ---
-    $(document).on('click', '#wechat-push-extension .inline-drawer-toggle', function(e) {
-        e.preventDefault();
-        e.stopPropagation(); // 关键！阻止事件冒泡跟酒馆底层逻辑打架
-        
-        const icon = $(this).find('.inline-drawer-icon');
-        const content = $(this).next('.inline-drawer-content');
-        
-        // 使用 jQuery 自带的 slideToggle 动画展开/收起
-        content.slideToggle(200, function() {
-            if (content.is(':visible')) {
-                icon.removeClass('down').addClass('up');
-            } else {
-                icon.removeClass('up').addClass('down');
+    // ==========================================
+    // 完全照搬 Word 文档里的原生 JS 展开逻辑
+    // ==========================================
+    const drawerToggle = document.querySelector('#wechat-push-extension .inline-drawer-toggle');
+    if (drawerToggle) {
+        drawerToggle.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+
+            const icon = this.querySelector('.inline-drawer-icon');
+            const content = this.nextElementSibling;
+
+            if (content) {
+                const isHidden = content.style.display === 'none';
+                content.style.display = isHidden ? 'block' : 'none';
+
+                if (icon) {
+                    if (isHidden) {
+                        icon.classList.remove('down');
+                        icon.classList.add('up');
+                    } else {
+                        icon.classList.remove('up');
+                        icon.classList.add('down');
+                    }
+                }
             }
         });
-    });
+    }
+    // ==========================================
 
     // 其他事件绑定
-    $(document).on('input', '#wp_token', function() {
+    $('#wp_token').on('input', function() {
         extension_settings[EXT_NAME].token = $(this).val();
     });
 
-    $(document).on('input', '#wp_interval', function() {
+    $('#wp_interval').on('input', function() {
         extension_settings[EXT_NAME].intervalMinutes = Number($(this).val());
         if (extension_settings[EXT_NAME].enabled) manageTimer();
     });
 
-    $(document).on('change', '#wp_enable', function() {
+    $('#wp_enable').on('change', function() {
         extension_settings[EXT_NAME].enabled = $(this).is(':checked');
         manageTimer();
     });
 
-    $(document).on('click', '#wp_send_now', sendWechatMessage);
+    $('#wp_send_now').on('click', sendWechatMessage);
 
     if (extension_settings[EXT_NAME].enabled) {
         manageTimer();

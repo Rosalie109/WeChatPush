@@ -1,4 +1,4 @@
-import { extension_settings } from '/scripts/extensions.js';
+import { extension_settings, getContext } from '/scripts/extensions.js';
 import { executeSlashCommands } from '/scripts/slash-commands.js';
 
 const EXT_NAME = 'WeChatPush';
@@ -63,15 +63,8 @@ function initWeChatPushUI(container) {
             if (content) {
                 const isHidden = content.style.display === 'none';
                 content.style.display = isHidden ? 'block' : 'none';
-
                 if (icon) {
-                    if (isHidden) {
-                        icon.classList.remove('down');
-                        icon.classList.add('up');
-                    } else {
-                        icon.classList.remove('up');
-                        icon.classList.add('down');
-                    }
+                    isHidden ? icon.classList.replace('down', 'up') : icon.classList.replace('up', 'down');
                 }
             }
         });
@@ -108,41 +101,57 @@ async function sendWechatMessage() {
     toastr.info("正在触发 AI 生成...", "微信推送");
 
     try {
-        // 1. 纯净触发：不发任何系统消息，只让 AI 继续说话
+        // 1. 纯净触发
         await executeSlashCommands(`/gen`);
 
-        // 2. 关键修复：轮询死等，确保 AI 真正把字打完
-        await new Promise(resolve => setTimeout(resolve, 1000)); // 先等1秒让状态机反应过来
-        
-        // 当酒馆处于“生成中”状态时，代码就卡在这里一直等
-        while (window.is_generating || window.is_send_press) {
+        // 2. 双重等待机制：防止抓到空内容
+        // 等待 2 秒给酒馆反应时间，进入生成状态
+        await new Promise(resolve => setTimeout(resolve, 2000)); 
+        // 死等，直到生成动作彻底结束
+        while (window.is_generating) {
             await new Promise(resolve => setTimeout(resolve, 1000));
         }
-        
-        // 生成结束后再等 500 毫秒，确保聊天框 DOM 刷新完毕
-        await new Promise(resolve => setTimeout(resolve, 500));
+        // 再等 1 秒，让新消息成功写入到聊天记录数组中
+        await new Promise(resolve => setTimeout(resolve, 1000));
 
-        // 3. 安全抓取最后一条消息
-        const chatArr = window.chat;
-        let lastMsg = "无内容";
+        // 3. 使用官方 API 获取真实的上下文数据
+        const context = typeof getContext === 'function' ? getContext() : {};
+        const chatArr = context.chat || window.chat;
+        
+        // 多重保障拿角色名字
+        let charName = "AI";
+        if (context.name2) charName = context.name2;
+        else if (window.name2) charName = window.name2;
+        else if (window.characters && window.this_chid !== undefined) charName = window.characters[window.this_chid].name;
+
+        let lastMsg = "获取内容失败，请重试";
         if (chatArr && chatArr.length > 0) {
-            const lastNode = chatArr[chatArr.length - 1];
-            lastMsg = lastNode.mes;
+            lastMsg = chatArr[chatArr.length - 1].mes;
         }
 
-        // 4. 自动获取当前角色真名
-        const charName = window.name2 || "AI";
+        // 4. 解析 AI 自定义标题（如果 AI 没有按格式写，就用兜底方案）
+        let pushTitle = `来自 ${charName} 的留言`;
+        let pushContent = lastMsg;
 
-        toastr.info("正在推送到微信...", "微信推送");
+        // 正则识别：抓取“标题：xxx”和“正文：xxx”
+        const regex = /(?:标题|Title)[:：]\s*(.*?)\n+(?:正文|内容|Content)[:：]\s*([\s\S]*)/i;
+        const match = lastMsg.match(regex);
+        
+        if (match) {
+            pushTitle = match[1].trim();
+            pushContent = match[2].trim();
+        }
 
-        // 5. 独立网络请求发送
+        toastr.info("内容已抓取，正在推送到微信...", "微信推送");
+
+        // 5. 发送到 PushPlus
         await fetch("http://www.pushplus.plus/send", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 token: token,
-                title: `来自 ${charName} 的留言`,
-                content: lastMsg
+                title: pushTitle,
+                content: pushContent
             })
         });
 

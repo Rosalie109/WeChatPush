@@ -4,7 +4,6 @@ import { executeSlashCommands } from '/scripts/slash-commands.js';
 const EXT_NAME = 'WeChatPush';
 let pushTimer = null;
 
-// 1. 初始化设置中加入 customPrompt 字段
 if (!extension_settings[EXT_NAME]) {
     extension_settings[EXT_NAME] = { token: '', enabled: false, intervalMinutes: 120, customPrompt: '' };
 }
@@ -22,7 +21,6 @@ $(document).ready(() => {
 });
 
 function initWeChatPushUI(container) {
-    // 2. 界面新增输入框
     const html = `
     <div id="wechat-push-extension" class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
@@ -77,7 +75,6 @@ function initWeChatPushUI(container) {
     }
 
     $('#wp_token').on('input', function() { extension_settings[EXT_NAME].token = $(this).val(); });
-    // 绑定输入框的保存
     $('#wp_prompt').on('input', function() { extension_settings[EXT_NAME].customPrompt = $(this).val(); });
     
     $('#wp_interval').on('input', function() {
@@ -107,30 +104,27 @@ async function sendWechatMessage() {
     toastr.info("正在触发 AI 生成...", "微信推送");
 
     try {
-        // 3. 构建安全稳定的指令
         const nowTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
         let userPrompt = extension_settings[EXT_NAME].customPrompt;
         let finalPrompt = "";
         
-        // 如果留空，使用极其严格的防动作、规范格式默认指令
         if (!userPrompt || userPrompt.trim() === '') {
-            finalPrompt = `[系统指令：当前时间是 ${{time_UTC+8}}。请主动给我发一条真实的手机微信消息。必须严格按照以下格式输出，绝不能使用星号(*)或括号进行动作描写，绝不包含心理活动、时间戳、思考链。语言必须像微信聊天一样简短自然：\\n标题：(你自拟的通知标题，如"早安"或"查岗")\\n正文：(纯文本消息内容)]`;
+            finalPrompt = `[系统指令：当前时间是 ${nowTime}。请主动给我发一条真实的手机微信消息。必须严格按照以下格式输出，绝不能使用星号(*)或括号进行动作描写，绝不包含心理活动、时间戳、思考链。语言必须像微信聊天一样简短自然：\n标题：(你自拟的通知标题，如"早安"或"查岗")\n正文：(纯文本消息内容)]`;
         } else {
-            finalPrompt = `[系统指令：${userPrompt.replace(/{{time}}/g, nowTime).replace(/{{time_UTC\\+8}}/g, nowTime)}]`;
+            // 已修复 {{time_UTC+8}} 中 "+" 号的正则转义问题
+            let replacedPrompt = userPrompt.replace(/\{\{time\}\}/g, nowTime).replace(/\{\{time_UTC\+8\}\}/g, nowTime);
+            finalPrompt = `[系统指令：${replacedPrompt}]`;
         }
 
-        // 极其稳定：使用原生 /sys 发送指令，绝不破坏 API 格式
         const cmd = `/sys ${finalPrompt} | /gen`;
         await executeSlashCommands(cmd);
 
-        // 4. 双重等待机制：防止抓到空内容
         await new Promise(resolve => setTimeout(resolve, 2000));
         while (window.is_generating) {
             await new Promise(resolve => setTimeout(resolve, 1000));
         }
         await new Promise(resolve => setTimeout(resolve, 1000));
 
-        // 5. 抓取内容与解析
         const context = typeof getContext === 'function' ? getContext() : {};
         const chatArr = context.chat || window.chat;
         
@@ -144,11 +138,11 @@ async function sendWechatMessage() {
             lastMsg = chatArr[chatArr.length - 1].mes;
         }
 
-        // 解析 AI 自定义标题和正文
         let pushTitle = `来自 ${charName} 的留言`;
         let pushContent = lastMsg;
 
-        const regex = /(?:标题|Title)[:：]\\s*(.*?)\\n+(?:正文|内容|Content)[:：]\\s*([\\s\\S]*)/i;
+        // 已修复正则中的过度转义问题
+        const regex = /(?:标题|Title)[:：]\s*(.*?)\n+(?:正文|内容|Content)[:：]\s*([\s\S]*)/i;
         const match = lastMsg.match(regex);
         
         if (match) {
@@ -156,17 +150,16 @@ async function sendWechatMessage() {
             pushContent = match[2].trim();
         }
 
-        // 暴力清洗：就算 AI 不听话发了动作，直接正则剃掉星号和括号里的内容
-        pushContent = pushContent.replace(/\\*[\\s\\S]*?\\*/g, '')
-                                 .replace(/（[\\s\\S]*?）/g, '')
-                                 .replace(/\\([\\s\\S]*?\\)/g, '')
+        // 已修复正则清洗动作描写时的语法错误
+        pushContent = pushContent.replace(/\*[\s\S]*?\*/g, '')
+                                 .replace(/（[\s\S]*?）/g, '')
+                                 .replace(/\([\s\S]*?\)/g, '')
                                  .trim();
                                  
-        if (pushContent === '') pushContent = lastMsg; // 兜底防空
+        if (pushContent === '') pushContent = lastMsg; 
 
         toastr.info("内容已抓取，正在推送到微信...", "微信推送");
 
-        // 发送到 PushPlus
         await fetch("http://www.pushplus.plus/send", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -179,13 +172,13 @@ async function sendWechatMessage() {
 
         toastr.success("微信推送发送成功！", "微信推送");
 
-        // 6. 阅后即焚：把刚才发在公屏的系统提示词删掉，保持聊天清爽
+        // 删除刚发出的系统指令，避免污染聊天界面
         try {
             if (chatArr && chatArr.length >= 2) {
                 if (chatArr[chatArr.length - 2].is_system && chatArr[chatArr.length - 2].mes.includes("系统指令")) {
                     chatArr.splice(chatArr.length - 2, 1);
                     if (typeof window.printMessages === 'function') {
-                        window.printMessages(); // 刷新界面，让提示词消失
+                        window.printMessages(); 
                     }
                 }
             }

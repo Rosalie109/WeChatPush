@@ -37,7 +37,7 @@ function initWeChatPushUI(container) {
             
             <div style="margin-bottom: 10px;">
                 <label style="display: block; margin-bottom: 5px;">自定义隐形指令 (留空则用默认):</label>
-                <textarea id="wp_prompt" class="text_pole" style="width: 100%; height: 80px; resize: vertical;" placeholder="例如：现在是 {{time_UTC+8}}，根据上文剧情，发一条简短微信给我，不要输出多余内容...">${extension_settings[EXT_NAME].prompt || ''}</textarea>
+                <textarea id="wp_prompt" class="text_pole" style="width: 100%; height: 80px; resize: vertical;" placeholder="例如：一段时间过去了，现在是 {{time_UTC+8}}，角色想要主动联系用户，根据上文剧情，发一条简短微信给我，不要输出多余内容...">${extension_settings[EXT_NAME].prompt || ''}</textarea>
             </div>
 
             <hr>
@@ -223,3 +223,4 @@ function manageTimer() {
         toastr.info("定时推送已关闭", "微信推送");
     }
 }
+

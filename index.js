@@ -111,7 +111,6 @@ async function sendWechatMessage() {
         if (!userPrompt || userPrompt.trim() === '') {
             finalPrompt = `[系统指令：当前时间是 ${nowTime}。请主动给我发一条真实的手机微信消息。必须严格按照以下格式输出，绝不能使用星号(*)或括号进行动作描写，绝不包含心理活动、时间戳、思考链。语言必须像微信聊天一样简短自然：\n标题：(你自拟的通知标题，如"早安"或"查岗")\n正文：(纯文本消息内容)]`;
         } else {
-            // 已修复 {{time_UTC+8}} 中 "+" 号的正则转义问题
             let replacedPrompt = userPrompt.replace(/\{\{time\}\}/g, nowTime).replace(/\{\{time_UTC\+8\}\}/g, nowTime);
             finalPrompt = `[系统指令：${replacedPrompt}]`;
         }
@@ -119,11 +118,20 @@ async function sendWechatMessage() {
         const cmd = `/sys ${finalPrompt} | /gen`;
         await executeSlashCommands(cmd);
 
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        while (window.is_generating) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
+        // 【关键修复 1】增强等待机制，必须等到 AI 真正开始生成
+        let waitStart = 0;
+        while (!window.is_generating && waitStart < 50) {
+            await new Promise(r => setTimeout(r, 100));
+            waitStart++;
         }
-        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        // 死等生成结束
+        while (window.is_generating) {
+            await new Promise(r => setTimeout(r, 1000));
+        }
+        
+        // 多等 1.5 秒，确保酒馆已经把生成的文本完全写进聊天记录里
+        await new Promise(resolve => setTimeout(resolve, 1500));
 
         const context = typeof getContext === 'function' ? getContext() : {};
         const chatArr = context.chat || window.chat;
@@ -134,14 +142,23 @@ async function sendWechatMessage() {
         else if (window.characters && window.this_chid !== undefined) charName = window.characters[window.this_chid].name;
 
         let lastMsg = "获取内容失败，请重试";
+        
+        // 【关键修复 2】倒序查找，直到找到第一条属于 AI 的回复，跳过刚刚发的系统指令
         if (chatArr && chatArr.length > 0) {
-            lastMsg = chatArr[chatArr.length - 1].mes;
+            for (let i = chatArr.length - 1; i >= 0; i--) {
+                if (!chatArr[i].is_system && !chatArr[i].is_user) {
+                    lastMsg = chatArr[i].mes;
+                    break;
+                }
+            }
         }
+
+        // 【关键修复 3】清理部分带深度思考模型的 <think> 标签内容
+        lastMsg = lastMsg.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 
         let pushTitle = `来自 ${charName} 的留言`;
         let pushContent = lastMsg;
 
-        // 已修复正则中的过度转义问题
         const regex = /(?:标题|Title)[:：]\s*(.*?)\n+(?:正文|内容|Content)[:：]\s*([\s\S]*)/i;
         const match = lastMsg.match(regex);
         
@@ -150,13 +167,15 @@ async function sendWechatMessage() {
             pushContent = match[2].trim();
         }
 
-        // 已修复正则清洗动作描写时的语法错误
         pushContent = pushContent.replace(/\*[\s\S]*?\*/g, '')
                                  .replace(/（[\s\S]*?）/g, '')
                                  .replace(/\([\s\S]*?\)/g, '')
                                  .trim();
                                  
-        if (pushContent === '') pushContent = lastMsg; 
+        if (pushContent === '') {
+            // 如果全部被清理光了，就把剥离了 think 标签的原话发出去
+            pushContent = lastMsg; 
+        }
 
         toastr.info("内容已抓取，正在推送到微信...", "微信推送");
 
@@ -172,13 +191,16 @@ async function sendWechatMessage() {
 
         toastr.success("微信推送发送成功！", "微信推送");
 
-        // 删除刚发出的系统指令，避免污染聊天界面
+        // 【关键修复 4】安全地倒序清理阅后即焚的系统指令
         try {
-            if (chatArr && chatArr.length >= 2) {
-                if (chatArr[chatArr.length - 2].is_system && chatArr[chatArr.length - 2].mes.includes("系统指令")) {
-                    chatArr.splice(chatArr.length - 2, 1);
-                    if (typeof window.printMessages === 'function') {
-                        window.printMessages(); 
+            if (chatArr && chatArr.length >= 1) {
+                for (let i = chatArr.length - 1; i >= 0; i--) {
+                    if (chatArr[i].is_system && chatArr[i].mes.includes("系统指令")) {
+                        chatArr.splice(i, 1);
+                        if (typeof window.printMessages === 'function') {
+                            window.printMessages(); 
+                        }
+                        break; // 删掉一条就停下
                     }
                 }
             }
@@ -189,7 +211,6 @@ async function sendWechatMessage() {
         toastr.error("推送失败，请检查网络", "微信推送");
     }
 }
-
 function manageTimer() {
     if (pushTimer) {
         clearInterval(pushTimer);
@@ -203,3 +224,4 @@ function manageTimer() {
         toastr.info("定时推送已关闭", "微信推送");
     }
 }
+

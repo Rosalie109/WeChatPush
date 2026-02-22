@@ -11,13 +11,15 @@ if (!extension_settings[EXT_NAME]) {
 async function sendWechatMessage() {
     const token = extension_settings[EXT_NAME].token;
     if (!token) {
-        toastr.error('请先输入Token');
+        toastr.error('请先输入 Token', '微信推送');
         return;
     }
+    
     const cmd = `/remind [系统：当前时间 {{time}}。请主动发一条消息。] | /generate | /fetch url="http://www.pushplus.plus/send" method="POST" body="{\\"token\\":\\"${token}\\",\\"title\\":\\"{{char}}的留言\\",\\"content\\":\\"{{lastMessage}}\\"}" headers="{\\"Content-Type\\":\\"application/json\\"}"`;
     
+    toastr.info('正在生成并发送...', '微信推送');
     await executeSlashCommands(cmd);
-    toastr.success('微信推送已触发');
+    toastr.success('微信推送已发送', '微信推送');
 }
 
 function manageTimer() {
@@ -28,51 +30,41 @@ function manageTimer() {
     if (extension_settings[EXT_NAME].enabled) {
         const ms = extension_settings[EXT_NAME].interval * 60 * 1000;
         pushTimer = setInterval(sendWechatMessage, ms);
-        toastr.info('定时推送已启动');
+        toastr.info(`定时已开启：每 ${extension_settings[EXT_NAME].interval} 分钟触发`, '微信推送');
+    } else {
+        toastr.info('定时推送已关闭', '微信推送');
     }
 }
 
-const html = `
-<div class="inline-drawer">
-    <div class="inline-drawer-toggle inline-drawer-header">
-        <b>微信推送面板</b>
-        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-    </div>
-    <div class="inline-drawer-content">
-        <label>Token:</label>
-        <input type="text" id="wp_token" class="text_pole" value="${extension_settings[EXT_NAME].token}">
-        <hr>
-        <label style="display: flex; align-items: center; gap: 5px;">
-            <input type="checkbox" id="wp_enable" ${extension_settings[EXT_NAME].enabled ? 'checked' : ''}>
-            <span>开启定时发送</span>
-        </label>
-        <br>
-        <label>间隔时间(分钟):</label>
-        <input type="number" id="wp_interval" class="text_pole" value="${extension_settings[EXT_NAME].interval}" min="1">
-        <hr>
-        <button id="wp_send_now" class="menu_button">立即发送</button>
-    </div>
-</div>
-`;
-
 jQuery(async () => {
-    $('#extensions_settings').append(html);
-
-    $('#wp_token').on('input', function() {
+    // 事件委托绑定
+    $(document).on('input', '#wp_token', function() {
         extension_settings[EXT_NAME].token = $(this).val();
     });
 
-    $('#wp_interval').on('input', function() {
+    $(document).on('input', '#wp_interval', function() {
         extension_settings[EXT_NAME].interval = Number($(this).val());
         manageTimer();
     });
 
-    $('#wp_enable').on('change', function() {
+    $(document).on('change', '#wp_enable', function() {
         extension_settings[EXT_NAME].enabled = $(this).is(':checked');
         manageTimer();
     });
 
-    $('#wp_send_now').on('click', sendWechatMessage);
+    $(document).on('click', '#wp_send_now', sendWechatMessage);
 
-    manageTimer();
+    // 轮询等待 index.html 注入DOM后填入数据
+    const initInterval = setInterval(() => {
+        if ($('#wp_token').length > 0) {
+            clearInterval(initInterval);
+            $('#wp_token').val(extension_settings[EXT_NAME].token);
+            $('#wp_interval').val(extension_settings[EXT_NAME].interval);
+            $('#wp_enable').prop('checked', extension_settings[EXT_NAME].enabled);
+        }
+    }, 100);
+
+    if (extension_settings[EXT_NAME].enabled) {
+        manageTimer();
+    }
 });

@@ -1,76 +1,156 @@
-async function sendWechatMessage() {
-    // 1. 基础校验
-    if (window.is_generating) {
-        toastr.warning("AI正在生成中，请稍后再试", "微信推送");
-        return;
+import { extension_settings, getContext } from '/scripts/extensions.js';
+import { executeSlashCommands } from '/scripts/slash-commands.js';
+
+const EXT_NAME = 'WeChatPush';
+let pushTimer = null;
+
+if (!extension_settings[EXT_NAME]) {
+    extension_settings[EXT_NAME] = { token: '', enabled: false, intervalMinutes: 120, customPrompt: '' };
+}
+
+$(document).ready(() => {
+    setTimeout(() => {
+        const interval = setInterval(() => {
+            const container = document.getElementById('extensions_settings');
+            if (container) {
+                clearInterval(interval);
+                initWeChatPushUI(container);
+            }
+        }, 500);
+    }, 1000);
+});
+
+function initWeChatPushUI(container) {
+    const html = `
+    <div id="wechat-push-extension" class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>💬 微信定时推送</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content" style="display: none;">
+            <div style="margin-bottom: 15px; display: flex; align-items: center; justify-content: space-between;">
+                <label>Token:</label>
+                <input type="text" id="wp_token" class="text_pole" placeholder="填入PushPlus Token" style="width: 70%;" value="${extension_settings[EXT_NAME].token}">
+            </div>
+            
+            <div style="margin-bottom: 15px;">
+                <label style="display: block; margin-bottom: 5px;">触发提示词 (留空使用默认):</label>
+                <textarea id="wp_prompt" class="text_pole" style="width: 100%; height: 60px; resize: vertical;" placeholder="留空则默认让角色发一条消息">${extension_settings[EXT_NAME].customPrompt || ''}</textarea>
+            </div>
+
+            <hr>
+            <div style="margin-bottom: 15px;">
+                <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                    <input type="checkbox" id="wp_enable" ${extension_settings[EXT_NAME].enabled ? 'checked' : ''}>
+                    <span>开启定时发送</span>
+                </label>
+            </div>
+            <div style="margin-bottom: 15px; display: flex; align-items: center; justify-content: space-between;">
+                <label>间隔(分钟):</label>
+                <input type="number" id="wp_interval" class="text_pole" min="1" style="width: 70%;" value="${extension_settings[EXT_NAME].intervalMinutes}">
+            </div>
+            <hr>
+            <button type="button" id="wp_send_now" class="menu_button" style="width: 100%;">立即发送微信</button>
+        </div>
+    </div>
+    `;
+
+    container.insertAdjacentHTML('beforeend', html);
+
+    const drawerToggle = document.querySelector('#wechat-push-extension .inline-drawer-toggle');
+    if (drawerToggle) {
+        drawerToggle.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const icon = this.querySelector('.inline-drawer-icon');
+            const content = this.nextElementSibling;
+            if (content) {
+                const isHidden = content.style.display === 'none';
+                content.style.display = isHidden ? 'block' : 'none';
+                if (icon) {
+                    isHidden ? icon.classList.replace('down', 'up') : icon.classList.replace('up', 'down');
+                }
+            }
+        });
     }
 
+    $('#wp_token').on('input', function() { extension_settings[EXT_NAME].token = $(this).val(); });
+    $('#wp_prompt').on('input', function() { extension_settings[EXT_NAME].customPrompt = $(this).val(); });
+    
+    $('#wp_interval').on('input', function() {
+        extension_settings[EXT_NAME].intervalMinutes = Number($(this).val());
+        if (extension_settings[EXT_NAME].enabled) manageTimer();
+    });
+
+    $('#wp_enable').on('change', function() {
+        extension_settings[EXT_NAME].enabled = $(this).is(':checked');
+        manageTimer();
+    });
+
+    $('#wp_send_now').on('click', sendWechatMessage);
+
+    if (extension_settings[EXT_NAME].enabled) {
+        manageTimer();
+    }
+}
+
+async function sendWechatMessage() {
     const token = extension_settings[EXT_NAME].token;
     if (!token) {
         toastr.error("请先输入 Token", "微信推送");
         return;
     }
     
-    toastr.info("指令已发送，等待 AI 思考与回复...", "微信推送");
+    toastr.info("指令已发送，等待 AI 生成...", "微信推送");
 
     try {
-        // 2. 组装最稳妥的系统提示词
         const nowTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
         let userPrompt = extension_settings[EXT_NAME].customPrompt || '';
         let finalPrompt = "";
         
         if (userPrompt.trim() === '') {
-            finalPrompt = `[系统指令：现在是 ${nowTime}。请主动发一条微信消息给我。直接说出你想对我说的话，不要带心理活动和多余格式。]`;
+            finalPrompt = `[系统指令：现在是 ${nowTime}。请主动发一条微信消息给我。]`;
         } else {
             let replacedPrompt = userPrompt.replace(/\{\{time\}\}/g, nowTime).replace(/\{\{time_UTC\+8\}\}/g, nowTime);
             finalPrompt = `[系统指令：${replacedPrompt}]`;
         }
 
-        // 3. 发送指令并触发生成
+        // 1. 发送指令
         await executeSlashCommands(`/sys ${finalPrompt} | /gen`);
 
-        // 4. 【核心修复：绝对复刻第一版的无脑死等逻辑】
-        // 强行挂起 3 秒！绝不提前去查状态，给足 API 请求发出的时间
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        // 2. 第一版最稳妥的无脑等待逻辑
+        await new Promise(resolve => setTimeout(resolve, 3000)); // 强行等3秒让状态机反应过来
         
-        // 现在 API 肯定已经在跑了，死等它跑完
         while (window.is_generating) {
             await new Promise(resolve => setTimeout(resolve, 1000));
         }
         
-        // 生成完了，再等 1.5 秒，确保酒馆把文字渲染到了聊天记录数组里
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        await new Promise(resolve => setTimeout(resolve, 1500)); // 等待聊天记录写入
 
-        // 5. 倒序抓取：找最后一条真正属于 AI 的话
+        // 3. 第一版的盲抓最后一条逻辑
         const context = typeof getContext === 'function' ? getContext() : {};
         const chatArr = context.chat || window.chat;
         
         let lastMsg = "提取失败";
         if (chatArr && chatArr.length > 0) {
-            for (let i = chatArr.length - 1; i >= 0; i--) {
-                // 跳过刚刚发的系统指令，跳过你的发言，精准命中 AI 回复
-                if (!chatArr[i].is_system && !chatArr[i].is_user && chatArr[i].name !== 'System') {
-                    lastMsg = chatArr[i].mes;
-                    break;
-                }
-            }
+            lastMsg = chatArr[chatArr.length - 1].mes; // 无脑抓最后一条
         }
 
-        // 6. 暴力净水器：只杀 <think>，其他全留
+        // 4. 清理 <think> 标签
         let pushContent = lastMsg.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+        
         if (!pushContent || pushContent === '') {
-            pushContent = "收到一条空消息。";
+            pushContent = "收到一条空消息（可能抓取到了空内容）。";
         }
 
-        // 7. 提取角色真名做标题
         let charName = "AI";
         if (context.name2) charName = context.name2;
         else if (window.name2) charName = window.name2;
         else if (window.characters && window.this_chid !== undefined) charName = window.characters[window.this_chid].name;
 
-        toastr.info("内容已抓取，正在推送到微信...", "微信推送");
+        toastr.info("内容已抓取，正在发送...", "微信推送");
 
-        // 8. 【核心修复：绝对复刻第一版的原生网络请求】
+        // 5. 原生 POST 发送
         await fetch("http://www.pushplus.plus/send", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -83,21 +163,22 @@ async function sendWechatMessage() {
 
         toastr.success("微信推送发送成功！", "微信推送");
 
-        // 9. 擦黑板：把公屏上的系统指令删掉
-        try {
-            if (chatArr && chatArr.length >= 1) {
-                for (let i = chatArr.length - 1; i >= Math.max(0, chatArr.length - 5); i--) {
-                    if (chatArr[i].is_system && chatArr[i].mes.includes("系统指令")) {
-                        chatArr.splice(i, 1);
-                        if (typeof window.printMessages === 'function') window.printMessages();
-                        break;
-                    }
-                }
-            }
-        } catch(e) { console.warn("清理系统消息失败", e); }
-
     } catch (error) {
-        console.error("执行过程发生错误:", error);
-        toastr.error("推送失败，请检查控制台", "微信推送");
+        console.error("执行出错:", error);
+        toastr.error("执行过程发生错误", "微信推送");
+    }
+}
+
+function manageTimer() {
+    if (pushTimer) {
+        clearInterval(pushTimer);
+        pushTimer = null;
+    }
+    if (extension_settings[EXT_NAME].enabled) {
+        const ms = extension_settings[EXT_NAME].intervalMinutes * 60 * 1000;
+        pushTimer = setInterval(sendWechatMessage, ms);
+        toastr.success(`定时已开启：每 ${extension_settings[EXT_NAME].intervalMinutes} 分钟触发`, "微信推送");
+    } else {
+        toastr.info("定时推送已关闭", "微信推送");
     }
 }

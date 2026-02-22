@@ -115,55 +115,74 @@ async function sendWechatMessage() {
             finalPrompt = `[系统指令：${replacedPrompt}]`;
         }
 
-        // 1. 发送指令
-        await executeSlashCommands(`/sys ${finalPrompt} | /gen`);
-
-        // 2. 绝对稳定的等待逻辑
-        await new Promise(resolve => setTimeout(resolve, 3000)); 
-        
-        while (window.is_generating) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-        
-        await new Promise(resolve => setTimeout(resolve, 1500));
-
-        // 3. 【核心修复】：倒序智能抓取
-        const context = typeof getContext === 'function' ? getContext() : {};
-        const chatArr = context.chat || window.chat;
-        
-        let lastMsg = "提取失败";
-        if (chatArr && chatArr.length > 0) {
-            // 从最后一条往前找
-            for (let i = chatArr.length - 1; i >= 0; i--) {
-                const msg = chatArr[i];
-                
-                // 如果看到我们自己发的带有“系统指令”字样的话，直接跳过
-                if (msg.mes.includes("[系统指令：")) continue;
-                
-                // 如果看到系统消息或者用户消息，也跳过
-                if (msg.is_system || msg.is_user || msg.name === 'System') continue;
-                
-                // 排除万难，剩下的绝对是 AI 的真实回复！
-                lastMsg = msg.mes;
-                break;
+        // 1. 记录指令发送前，AI 消息的总数量
+        const chatBefore = window.chat || [];
+        let initialAiCount = 0;
+        for (let i = 0; i < chatBefore.length; i++) {
+            if (!chatBefore[i].is_system && !chatBefore[i].is_user && chatBefore[i].name !== 'System') {
+                initialAiCount++;
             }
         }
 
-        // 4. 清理 <think> 标签里的啰嗦思考链，保留所有正文、动作、表情
-        let pushContent = lastMsg.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-        
-        if (!pushContent || pushContent === '') {
-            pushContent = lastMsg || "收到一条空消息";
+        // 2. 发送指令
+        await executeSlashCommands(`/sys ${finalPrompt} | /gen`);
+
+        // 3. 动态核对新消息
+        let newAiMsg = "";
+        let attempts = 0;
+        let success = false;
+
+        // 最大轮询等待 180 秒
+        while (attempts < 180) {
+            await new Promise(r => setTimeout(r, 1000));
+            
+            const chatCurrent = window.chat || [];
+            let currentAiCount = 0;
+            let latestAiMsg = "";
+            
+            // 实时清点当前的 AI 消息数量
+            for (let i = 0; i < chatCurrent.length; i++) {
+                if (!chatCurrent[i].is_system && !chatCurrent[i].is_user && chatCurrent[i].name !== 'System') {
+                    currentAiCount++;
+                    latestAiMsg = chatCurrent[i].mes;
+                }
+            }
+
+            // 只有当 AI 消息总数增加，并且不再处于生成状态时，才确认抓取成功
+            if (currentAiCount > initialAiCount && !window.is_generating) {
+                newAiMsg = latestAiMsg;
+                success = true;
+                break;
+            }
+
+            // 如果当前没有处于生成状态，才计算为超时消耗；如果正在生成，则耐心等待
+            if (!window.is_generating) {
+                attempts++;
+            }
         }
 
+        if (!success) {
+            toastr.error("抓取超时：未检测到 AI 发送新消息", "微信推送");
+            return;
+        }
+
+        // 4. 清理 <think> 标签内容
+        let pushContent = newAiMsg.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+        
+        if (!pushContent || pushContent === '') {
+            pushContent = newAiMsg || "收到一条空消息";
+        }
+
+        // 5. 获取角色名称
+        const context = typeof getContext === 'function' ? getContext() : {};
         let charName = "AI";
         if (context.name2) charName = context.name2;
         else if (window.name2) charName = window.name2;
         else if (window.characters && window.this_chid !== undefined) charName = window.characters[window.this_chid].name;
 
-        toastr.info("内容已抓取，正在发送...", "微信推送");
+        toastr.info("内容已精准抓取，正在发送...", "微信推送");
 
-        // 5. POST 发送
+        // 6. 执行 POST 发送
         await fetch("http://www.pushplus.plus/send", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -176,8 +195,9 @@ async function sendWechatMessage() {
 
         toastr.success("微信推送发送成功！", "微信推送");
 
-        // 6. 阅后即焚：把聊天界面上的“系统指令”自动删掉，保持清爽
+        // 7. 自动清理屏幕上的系统指令
         try {
+            const chatArr = window.chat;
             if (chatArr && chatArr.length >= 1) {
                 for (let i = chatArr.length - 1; i >= 0; i--) {
                     if (chatArr[i].is_system && chatArr[i].mes.includes("[系统指令：")) {
@@ -208,4 +228,5 @@ function manageTimer() {
         toastr.info("定时推送已关闭", "微信推送");
     }
 }
+
 

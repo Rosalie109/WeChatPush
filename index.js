@@ -1,31 +1,26 @@
-import { extension_settings } from '../../../extensions.js';
-import { executeSlashCommands } from '../../../slash-commands.js';
+import { extension_settings } from '/scripts/extensions.js';
+import { executeSlashCommands } from '/scripts/slash-commands.js';
 
 const EXT_NAME = 'WeChatPush';
 let pushTimer = null;
 
-// 1. 初始化保存的数据
 if (!extension_settings[EXT_NAME]) {
     extension_settings[EXT_NAME] = { token: '', enabled: false, intervalMinutes: 120 };
 }
 
-// 2. 核心加载逻辑（完美复刻音乐播放器的轮询等待机制）
 $(document).ready(() => {
     setTimeout(() => {
         const interval = setInterval(() => {
-            // 死等酒馆的扩展面板容器加载出来
             const container = document.getElementById('extensions_settings');
             if (container) {
-                clearInterval(interval); // 找到了就停止等待
-                initWeChatPushUI(container); // 开始注入我们的界面
+                clearInterval(interval);
+                initWeChatPushUI(container);
             }
         }, 500);
     }, 1000);
 });
 
-// 3. 构造并注入界面
 function initWeChatPushUI(container) {
-    // 将HTML代码直接包裹在这里
     const html = `
     <div id="wechat-push-extension" class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
@@ -33,88 +28,69 @@ function initWeChatPushUI(container) {
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content" style="display: none;">
-            
             <div style="margin-bottom: 15px; display: flex; align-items: center; justify-content: space-between;">
                 <label>Token:</label>
                 <input type="text" id="wp_token" class="text_pole" placeholder="填入PushPlus Token" style="width: 70%;" value="${extension_settings[EXT_NAME].token}">
             </div>
-            
             <hr>
-            
             <div style="margin-bottom: 15px;">
                 <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
                     <input type="checkbox" id="wp_enable" ${extension_settings[EXT_NAME].enabled ? 'checked' : ''}>
                     <span>开启定时发送</span>
                 </label>
             </div>
-            
             <div style="margin-bottom: 15px; display: flex; align-items: center; justify-content: space-between;">
                 <label>间隔(分钟):</label>
                 <input type="number" id="wp_interval" class="text_pole" min="1" style="width: 70%;" value="${extension_settings[EXT_NAME].intervalMinutes}">
             </div>
-            
             <hr>
-            
             <button type="button" id="wp_send_now" class="menu_button" style="width: 100%;">立即发送微信</button>
-            
         </div>
     </div>
     `;
 
-    // 使用原生方法安全插入DOM
     container.insertAdjacentHTML('beforeend', html);
 
-    // ================= 绑定界面事件 =================
-    
-    // 折叠动画逻辑（复刻音乐播放器）
-    const extensionDiv = document.getElementById('wechat-push-extension');
-    const toggleBtn = extensionDiv.querySelector('.inline-drawer-toggle');
-    
-    toggleBtn.addEventListener('click', function(e) {
+    // --- 核心修复：事件委托 + 阻止冒泡 ---
+    $(document).on('click', '#wechat-push-extension .inline-drawer-toggle', function(e) {
         e.preventDefault();
-        const icon = this.querySelector('.inline-drawer-icon');
-        const content = this.nextElementSibling;
+        e.stopPropagation(); // 关键！阻止事件冒泡跟酒馆底层逻辑打架
         
-        if (content) {
-            const isHidden = content.style.display === 'none';
-            content.style.display = isHidden ? 'block' : 'none';
-            
-            if (icon) {
-                if (isHidden) {
-                    icon.classList.remove('down');
-                    icon.classList.add('up');
-                } else {
-                    icon.classList.remove('up');
-                    icon.classList.add('down');
-                }
+        const icon = $(this).find('.inline-drawer-icon');
+        const content = $(this).next('.inline-drawer-content');
+        
+        // 使用 jQuery 自带的 slideToggle 动画展开/收起
+        content.slideToggle(200, function() {
+            if (content.is(':visible')) {
+                icon.removeClass('down').addClass('up');
+            } else {
+                icon.removeClass('up').addClass('down');
             }
-        }
+        });
     });
 
-    // 绑定数据保存和动作逻辑
-    $('#wp_token').on('input', function() {
+    // 其他事件绑定
+    $(document).on('input', '#wp_token', function() {
         extension_settings[EXT_NAME].token = $(this).val();
     });
 
-    $('#wp_interval').on('input', function() {
+    $(document).on('input', '#wp_interval', function() {
         extension_settings[EXT_NAME].intervalMinutes = Number($(this).val());
-        manageTimer();
+        if (extension_settings[EXT_NAME].enabled) manageTimer();
     });
 
-    $('#wp_enable').on('change', function() {
+    $(document).on('change', '#wp_enable', function() {
         extension_settings[EXT_NAME].enabled = $(this).is(':checked');
         manageTimer();
     });
 
-    $('#wp_send_now').on('click', sendWechatMessage);
+    $(document).on('click', '#wp_send_now', sendWechatMessage);
 
-    // 初始化定时器状态
     if (extension_settings[EXT_NAME].enabled) {
         manageTimer();
     }
 }
 
-// 4. 后台执行逻辑
 async function sendWechatMessage() {
     const token = extension_settings[EXT_NAME].token;
     if (!token) {

@@ -34,8 +34,8 @@ function initWeChatPushUI(container) {
             </div>
             
             <div style="margin-bottom: 15px;">
-                <label style="display: block; margin-bottom: 5px;">给AI的隐形指令 (留空使用默认):</label>
-                <textarea id="wp_prompt" class="text_pole" style="width: 100%; height: 60px; resize: vertical;" placeholder="此指令会隐身发送给AI，界面绝对不可见">${extension_settings[EXT_NAME].customPrompt || ''}</textarea>
+                <label style="display: block; margin-bottom: 5px;">触发提示词 (留空使用默认):</label>
+                <textarea id="wp_prompt" class="text_pole" style="width: 100%; height: 60px; resize: vertical;" placeholder="留空则默认让角色发一条消息">${extension_settings[EXT_NAME].customPrompt || ''}</textarea>
             </div>
 
             <hr>
@@ -106,89 +106,67 @@ async function sendWechatMessage() {
         return;
     }
     
-    toastr.info("正在潜行发送指令，触发 AI 生成...", "微信推送");
+    toastr.info("正在发送系统指令，触发 AI 生成...", "微信推送");
 
     try {
-        const context = typeof getContext === 'function' ? getContext() : {};
-        const chatArr = context.chat || window.chat;
-
-        if (!chatArr || chatArr.length === 0) {
-            toastr.error("聊天记录为空，无法挂载指令", "微信推送");
-            return;
-        }
-
-        // 1. 寻找最后一条【用户自己发出的消息】作为宿主
-        let lastUserIndex = -1;
-        for (let i = chatArr.length - 1; i >= 0; i--) {
-            if (chatArr[i].is_user && !chatArr[i].is_system) {
-                lastUserIndex = i;
-                break;
-            }
-        }
-        // 如果全篇没有用户发言，就强行挂在最后一条消息上
-        if (lastUserIndex === -1) lastUserIndex = chatArr.length - 1;
-
-        // 2. 准备指令
         const nowTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
         let userPrompt = extension_settings[EXT_NAME].customPrompt;
         let finalPrompt = "";
         
-        // 极其宽松的指令，完全不限制格式，只要它发消息
+        // 极简指令，不限制格式
         if (!userPrompt || userPrompt.trim() === '') {
-            finalPrompt = `\n\n[系统隐形指令：当前时间是 ${nowTime}。请主动给我发一条真实的微信消息。不需要任何多余格式，直接说出你想对我说的话。]`;
+            finalPrompt = `[系统指令：当前时间是 ${nowTime}。请主动给我发一条微信消息。直接说出你想对我说的话。]`;
         } else {
             let replacedPrompt = userPrompt.replace(/\{\{time\}\}/g, nowTime).replace(/\{\{time_UTC\+8\}\}/g, nowTime);
-            finalPrompt = `\n\n[系统隐形指令：${replacedPrompt}]`;
+            finalPrompt = `[系统指令：${replacedPrompt}]`;
         }
 
-        const originalText = chatArr[lastUserIndex].mes;
-        const initialLength = chatArr.length;
+        // 1. 发送系统指令并触发生成
+        await executeSlashCommands(`/sys ${finalPrompt} | /gen`);
 
-        // 3. 瞬间挂载提示词（极其底层，绝不产生新的聊天气泡）
-        chatArr[lastUserIndex].mes = originalText + finalPrompt;
-
-        // 4. 触发生成
-        executeSlashCommands(`/gen`);
-
-        // 5. 等待请求发出（等待 is_generating 变为 true）
+        // 2. 等待 AI 开始生成
         let waitStart = 0;
         while (!window.is_generating && waitStart < 50) {
             await new Promise(r => setTimeout(r, 100));
             waitStart++;
         }
 
-        // 6. 请求一旦发出，立刻把消息恢复原状！(阅后即焚，实现绝对隐身)
-        chatArr[lastUserIndex].mes = originalText;
-
         if (!window.is_generating) {
             toastr.error("API 未能启动生成，请检查网络", "微信推送");
             return;
         }
 
-        // 7. 死等生成结束，无论它思考多久
+        // 3. 等待 AI 彻底生成完毕
         while (window.is_generating) {
             await new Promise(r => setTimeout(r, 1000));
         }
 
-        // 给 1.5 秒缓冲，让酒馆把生成的字安全存进数组
+        // 给酒馆写入聊天记录的时间
         await new Promise(resolve => setTimeout(resolve, 1500));
 
-        // 8. 无脑抓取数组里最新的一条消息
+        // 4. 倒序抓取 AI 的最新回复
+        const context = typeof getContext === 'function' ? getContext() : {};
+        const chatArr = context.chat || window.chat;
+        
         let lastMsg = "获取内容失败，请重试";
-        if (chatArr.length > initialLength) {
-            lastMsg = chatArr[chatArr.length - 1].mes;
-        } else {
-            lastMsg = chatArr[chatArr.length - 1].mes; // 兜底抓取
+        if (chatArr && chatArr.length > 0) {
+            // 倒着找，跳过刚才发的系统提示词，找到第一条 AI 发的话
+            for (let i = chatArr.length - 1; i >= 0; i--) {
+                if (!chatArr[i].is_system && !chatArr[i].is_user && chatArr[i].name !== 'System') {
+                    lastMsg = chatArr[i].mes;
+                    break;
+                }
+            }
         }
 
-        // 9. 只剔除 <think> 标签，其他任何文字、动作、表情全部保留！
+        // 5. 暴力清洗：只删 <think> 标签，保留动作和文字
         let pushContent = lastMsg.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 
         if (!pushContent || pushContent === '') {
-            pushContent = "收到一条空消息或仅包含深度思考的内容。";
+            pushContent = "收到一条空消息。";
         }
 
-        // 10. 获取角色名字作为固定的标题
+        // 6. 提取角色名作为标题
         let charName = "AI";
         if (context.name2) charName = context.name2;
         else if (window.name2) charName = window.name2;
@@ -198,7 +176,7 @@ async function sendWechatMessage() {
 
         toastr.info("内容已提取，正在推送到微信...", "微信推送");
 
-        // 11. 傻瓜式直接推送到 PushPlus，不再分拆标题正文
+        // 7. 发送到 PushPlus
         await fetch("http://www.pushplus.plus/send", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -210,6 +188,19 @@ async function sendWechatMessage() {
         });
 
         toastr.success("微信推送发送成功！", "微信推送");
+
+        // 8. 事后清理刚才发在公屏的系统指令 (发了就发了，如果能删掉最好，删不掉也不影响功能)
+        try {
+            if (chatArr && chatArr.length >= 1) {
+                for (let i = chatArr.length - 1; i >= 0; i--) {
+                    if (chatArr[i].is_system && chatArr[i].mes.includes("系统指令")) {
+                        chatArr.splice(i, 1);
+                        if (typeof window.printMessages === 'function') window.printMessages();
+                        break;
+                    }
+                }
+            }
+        } catch(e) { console.log("清理系统消息失败", e); }
 
     } catch (error) {
         console.error(error);

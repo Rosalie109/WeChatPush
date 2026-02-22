@@ -105,18 +105,37 @@ async function sendWechatMessage() {
         return;
     }
     
-    toastr.info("正在生成并发送...", "微信推送");
+    toastr.info("正在触发 AI 生成...", "微信推送");
 
     try {
-        // 1. 只使用酒馆原生存在的 /sys 和 /gen，彻底弃用第三方 /fetch 宏
-        await executeSlashCommands(`/sys [系统：当前时间 {{time_UTC+8}}。请主动发一条消息。] | /gen`);
+        // 1. 纯净触发：不发任何系统消息，只让 AI 继续说话
+        await executeSlashCommands(`/gen`);
 
-        // 2. 抓取生成的上下文
+        // 2. 关键修复：轮询死等，确保 AI 真正把字打完
+        await new Promise(resolve => setTimeout(resolve, 1000)); // 先等1秒让状态机反应过来
+        
+        // 当酒馆处于“生成中”状态时，代码就卡在这里一直等
+        while (window.is_generating || window.is_send_press) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        
+        // 生成结束后再等 500 毫秒，确保聊天框 DOM 刷新完毕
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // 3. 安全抓取最后一条消息
         const chatArr = window.chat;
-        const lastMsg = (chatArr && chatArr.length > 0) ? chatArr[chatArr.length - 1].mes : "无内容";
-        const charName = (window.characters && window.this_chid !== undefined) ? window.characters[window.this_chid].name : "AI";
+        let lastMsg = "无内容";
+        if (chatArr && chatArr.length > 0) {
+            const lastNode = chatArr[chatArr.length - 1];
+            lastMsg = lastNode.mes;
+        }
 
-        // 3. 使用原生 JS 网络请求直接发给 PushPlus，不再依赖酒馆的斜杠命令解析
+        // 4. 自动获取当前角色真名
+        const charName = window.name2 || "AI";
+
+        toastr.info("正在推送到微信...", "微信推送");
+
+        // 5. 独立网络请求发送
         await fetch("http://www.pushplus.plus/send", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -127,10 +146,10 @@ async function sendWechatMessage() {
             })
         });
 
-        toastr.success("微信推送发送成功", "微信推送");
+        toastr.success("微信推送发送成功！", "微信推送");
     } catch (error) {
         console.error(error);
-        toastr.error("推送失败", "微信推送");
+        toastr.error("推送失败，请检查网络", "微信推送");
     }
 }
 

@@ -1,8 +1,8 @@
 {
-    "name": "WeChat Push",
+    "name": "wechat_push",
     "display_name": "微信定时推送",
-    "description": "定时或手动推送当前AI消息到微信",
-    "version": "1.2.0",
+    "description": "自定义微信消息推送工具",
+    "version": "1.0.0",
     "author": "Custom",
     "main": "index.js"
 }

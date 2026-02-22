@@ -35,7 +35,7 @@ function initWeChatPushUI(container) {
             
             <div style="margin-bottom: 15px;">
                 <label style="display: block; margin-bottom: 5px;">给AI的隐形指令 (留空使用默认):</label>
-                <textarea id="wp_prompt" class="text_pole" style="width: 100%; height: 60px; resize: vertical;" placeholder="此指令只发送给API，界面绝对不可见">${extension_settings[EXT_NAME].customPrompt || ''}</textarea>
+                <textarea id="wp_prompt" class="text_pole" style="width: 100%; height: 60px; resize: vertical;" placeholder="此指令会隐身发送给AI，界面绝对不可见">${extension_settings[EXT_NAME].customPrompt || ''}</textarea>
             </div>
 
             <hr>
@@ -95,68 +95,100 @@ function initWeChatPushUI(container) {
 }
 
 async function sendWechatMessage() {
+    if (window.is_generating) {
+        toastr.warning("AI正在生成中，请稍后再试", "微信推送");
+        return;
+    }
+
     const token = extension_settings[EXT_NAME].token;
     if (!token) {
         toastr.error("请先输入 Token", "微信推送");
         return;
     }
     
-    toastr.info("正在静默触发 AI 生成...", "微信推送");
+    toastr.info("正在潜行发送指令，触发 AI 生成...", "微信推送");
 
     try {
+        const context = typeof getContext === 'function' ? getContext() : {};
+        const chatArr = context.chat || window.chat;
+
+        if (!chatArr || chatArr.length === 0) {
+            toastr.error("聊天记录为空，无法挂载指令", "微信推送");
+            return;
+        }
+
+        // 1. 寻找最后一条【用户自己发出的消息】作为宿主
+        let lastUserIndex = -1;
+        for (let i = chatArr.length - 1; i >= 0; i--) {
+            if (chatArr[i].is_user && !chatArr[i].is_system) {
+                lastUserIndex = i;
+                break;
+            }
+        }
+        // 如果全篇没有用户发言，就强行挂在最后一条消息上
+        if (lastUserIndex === -1) lastUserIndex = chatArr.length - 1;
+
+        // 2. 准备指令
         const nowTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
         let userPrompt = extension_settings[EXT_NAME].customPrompt;
         let finalPrompt = "";
         
-        // 极其宽松的指令，只要它发句话就行
+        // 极其宽松的指令，完全不限制格式，只要它发消息
         if (!userPrompt || userPrompt.trim() === '') {
-            finalPrompt = `[系统隐形指令：当前时间是 ${nowTime}。请主动给我发一条微信消息。请直接说出你想说的话，不要写任何心理活动和动作描写。]`;
+            finalPrompt = `\n\n[系统隐形指令：当前时间是 ${nowTime}。请主动给我发一条真实的微信消息。不需要任何多余格式，直接说出你想对我说的话。]`;
         } else {
             let replacedPrompt = userPrompt.replace(/\{\{time\}\}/g, nowTime).replace(/\{\{time_UTC\+8\}\}/g, nowTime);
-            finalPrompt = `[系统隐形指令：${replacedPrompt}]`;
+            finalPrompt = `\n\n[系统隐形指令：${replacedPrompt}]`;
         }
 
-        // 1. 利用底层变量隐形注入提示词，界面上绝对看不见
-        window.extension_prompt = window.extension_prompt || {};
-        window.extension_prompt[EXT_NAME] = finalPrompt;
+        const originalText = chatArr[lastUserIndex].mes;
+        const initialLength = chatArr.length;
 
-        // 2. 干净利落地触发生成
-        await executeSlashCommands(`/gen`);
+        // 3. 瞬间挂载提示词（极其底层，绝不产生新的聊天气泡）
+        chatArr[lastUserIndex].mes = originalText + finalPrompt;
 
-        // 3. 复刻第一版最稳的无脑等待逻辑
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        // 4. 触发生成
+        executeSlashCommands(`/gen`);
+
+        // 5. 等待请求发出（等待 is_generating 变为 true）
+        let waitStart = 0;
+        while (!window.is_generating && waitStart < 50) {
+            await new Promise(r => setTimeout(r, 100));
+            waitStart++;
+        }
+
+        // 6. 请求一旦发出，立刻把消息恢复原状！(阅后即焚，实现绝对隐身)
+        chatArr[lastUserIndex].mes = originalText;
+
+        if (!window.is_generating) {
+            toastr.error("API 未能启动生成，请检查网络", "微信推送");
+            return;
+        }
+
+        // 7. 死等生成结束，无论它思考多久
         while (window.is_generating) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            await new Promise(r => setTimeout(r, 1000));
         }
-        await new Promise(resolve => setTimeout(resolve, 1000));
 
-        // 生成结束，立刻把隐形提示词删掉，不影响后续聊天
-        delete window.extension_prompt[EXT_NAME];
+        // 给 1.5 秒缓冲，让酒馆把生成的字安全存进数组
+        await new Promise(resolve => setTimeout(resolve, 1500));
 
-        // 4. 获取聊天记录，无脑抓最后一条
-        const context = typeof getContext === 'function' ? getContext() : {};
-        const chatArr = context.chat || window.chat;
-        
+        // 8. 无脑抓取数组里最新的一条消息
         let lastMsg = "获取内容失败，请重试";
-        if (chatArr && chatArr.length > 0) {
+        if (chatArr.length > initialLength) {
             lastMsg = chatArr[chatArr.length - 1].mes;
+        } else {
+            lastMsg = chatArr[chatArr.length - 1].mes; // 兜底抓取
         }
 
-        // 5. 暴力清洗内容
-        // 剃掉深度思考标签及里面的几千字废话
-        let pushContent = lastMsg.replace(/<think>[\s\S]*?<\/think>/gi, '');
-        // 剃掉星号、括号里的动作描写
-        pushContent = pushContent.replace(/\*[\s\S]*?\*/g, '')
-                                 .replace(/（[\s\S]*?）/g, '')
-                                 .replace(/\([\s\S]*?\)/g, '')
-                                 .trim();
-                                 
-        // 兜底：如果被剃得一干二净，就把不带think标签的原话发过去
+        // 9. 只剔除 <think> 标签，其他任何文字、动作、表情全部保留！
+        let pushContent = lastMsg.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+
         if (!pushContent || pushContent === '') {
-            pushContent = lastMsg.replace(/<think>[\s\S]*?<\/think>/gi, '').trim() || "收到一条新消息";
+            pushContent = "收到一条空消息或仅包含深度思考的内容。";
         }
 
-        // 获取角色名字做标题
+        // 10. 获取角色名字作为固定的标题
         let charName = "AI";
         if (context.name2) charName = context.name2;
         else if (window.name2) charName = window.name2;
@@ -166,7 +198,7 @@ async function sendWechatMessage() {
 
         toastr.info("内容已提取，正在推送到微信...", "微信推送");
 
-        // 6. 发送到 PushPlus
+        // 11. 傻瓜式直接推送到 PushPlus，不再分拆标题正文
         await fetch("http://www.pushplus.plus/send", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -181,8 +213,7 @@ async function sendWechatMessage() {
 
     } catch (error) {
         console.error(error);
-        if (window.extension_prompt) delete window.extension_prompt[EXT_NAME];
-        toastr.error("推送失败，请检查网络", "微信推送");
+        toastr.error("推送过程发生错误，请检查", "微信推送");
     }
 }
 

@@ -37,7 +37,7 @@ function initWeChatPushUI(container) {
             
             <div style="margin-bottom: 10px;">
                 <label style="display: block; margin-bottom: 5px;">自定义隐形指令 (留空则用默认):</label>
-                <textarea id="wp_prompt" class="text_pole" style="width: 100%; height: 80px; resize: vertical;" placeholder="例如：一段时间过去了，现在是 {{time_UTC+8}}，角色想要主动联系用户，根据上文剧情，发一条简短微信给我，不要输出多余内容...">${extension_settings[EXT_NAME].prompt || ''}</textarea>
+                <textarea id="wp_prompt" class="text_pole" style="width: 100%; height: 80px; resize: vertical;" placeholder="例如：现在是 {{time}}，发一条简短微信给我...">${extension_settings[EXT_NAME].prompt || ''}</textarea>
             </div>
 
             <hr>
@@ -104,6 +104,12 @@ function initWeChatPushUI(container) {
 }
 
 async function sendWechatMessage() {
+    // 防连点保护
+    if (window.is_generating) {
+        toastr.warning("AI正在生成中，请稍后再试", "微信推送");
+        return;
+    }
+
     const token = extension_settings[EXT_NAME].token;
     if (!token) {
         toastr.error("请先输入 Token", "微信推送");
@@ -116,13 +122,25 @@ async function sendWechatMessage() {
         return;
     }
     
-    // 1. 准备指令和时间戳
+    // 1. 寻找最后一条【用户自己发出的消息】（这样AI接口绝对不会报错）
+    let lastUserIndex = -1;
+    for (let i = chatArr.length - 1; i >= 0; i--) {
+        if (chatArr[i].is_user && !chatArr[i].is_system) {
+            lastUserIndex = i;
+            break;
+        }
+    }
+    
+    // 如果全篇你一句话都没发过，兜底用最后一条
+    if (lastUserIndex === -1) lastUserIndex = chatArr.length - 1;
+
+    // 2. 准备指令和时间戳
     const nowTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
     let customPrompt = extension_settings[EXT_NAME].prompt;
     
-    // 默认高压洗脑指令（如果用户留空）
+    // 默认高压洗脑指令（如果你留空）
     if (!customPrompt || customPrompt.trim() === '') {
-        customPrompt = `[系统隐形指令：当前现实时间是 ${nowTime}。请结合当前时间，主动给我发一条真实的手机微信消息。必须严格按照以下格式输出，绝不可以使用星号(*)或括号进行动作描写，绝不包含心理活动、时间戳。语言必须像真实的微信聊天一样简短自然：\n标题：(你自拟的通知标题，如"早安"或"查岗")\n正文：(纯文本消息内容)]`;
+        customPrompt = `\n\n[系统隐形指令：当前现实时间是 ${nowTime}。请结合当前时间，主动给我发一条真实的手机微信消息。必须严格按照以下格式输出，绝不可以使用星号(*)或括号进行动作描写，绝不包含心理活动、时间戳。语言必须像真实的微信聊天一样简短自然：\n标题：(你自拟的通知标题，如"早安"或"查岗")\n正文：(纯文本消息内容)]`;
     } else {
         // 替换用户自己写的宏
         customPrompt = customPrompt.replace(/{{time}}/g, nowTime).replace(/{{time_UTC\+8}}/g, nowTime);
@@ -131,10 +149,9 @@ async function sendWechatMessage() {
 
     toastr.info("正在触发 AI 生成...", "微信推送");
 
-    // 2. 核心黑科技：瞬间拦截并篡改最后一条消息，骗过 AI
-    const lastIndex = chatArr.length - 1;
-    const originalText = chatArr[lastIndex].mes;
-    chatArr[lastIndex].mes = originalText + "\n\n" + customPrompt;
+    // 3. 核心黑科技：瞬间拦截并篡改消息
+    const originalText = chatArr[lastUserIndex].mes;
+    chatArr[lastUserIndex].mes = originalText + customPrompt;
 
     try {
         const initialLength = chatArr.length;
@@ -142,34 +159,47 @@ async function sendWechatMessage() {
         // 触发生成
         executeSlashCommands(`/gen`);
 
-        // 死等 AI 开始生成（API请求发出）
-        while (!window.is_generating) {
+        // 死等 AI 开始生成（增加超时防卡死机制：最多等5秒，如果还不生成就是网断了）
+        let waitStart = 0;
+        while (!window.is_generating && waitStart < 50) {
             await new Promise(r => setTimeout(r, 100));
+            waitStart++;
         }
 
-        // 3. AI 一开始生成，立刻把聊天记录恢复原样！做到死无对证、完全无痕！
-        await new Promise(r => setTimeout(r, 800)); // 给网络请求留 0.8 秒缓冲
-        chatArr[lastIndex].mes = originalText;
+        // 如果5秒后还没启动，说明发生了错误被拦截了
+        if (!window.is_generating) {
+            chatArr[lastUserIndex].mes = originalText; // 恢复现场
+            toastr.error("AI未能启动生成，可能被系统拦截或发生API错误。", "微信推送");
+            return;
+        }
 
-        // 4. 死等 AI 把回复彻底打完
+        // 死等 AI 把回复彻底打完
         while (window.is_generating) {
             await new Promise(r => setTimeout(r, 500));
         }
         
+        // 生成结束，立刻把聊天记录恢复原样！死无对证！
+        chatArr[lastUserIndex].mes = originalText;
+        
         // 再等 1 秒，让新消息成功刷新到界面上
         await new Promise(r => setTimeout(r, 1000));
 
-        // 5. 安全抓取最新生成的一句话
+        // 4. 安全抓取最新生成的一句话
         let lastMsg = "获取内容失败，请重试";
         if (chatArr.length > initialLength) {
             lastMsg = chatArr[chatArr.length - 1].mes;
+        } else {
+            lastMsg = chatArr[chatArr.length - 1].mes; // 兜底
         }
 
         // 获取角色真名
         const context = typeof getContext === 'function' ? getContext() : {};
         let charName = context.name2 || window.name2 || "AI";
+        if (charName === "AI" && window.characters && window.this_chid !== undefined) {
+            charName = window.characters[window.this_chid].name;
+        }
 
-        // 6. 解析标题和正文
+        // 5. 解析标题和正文
         let pushTitle = `来自 ${charName} 的新消息`;
         let pushContent = lastMsg;
 
@@ -181,17 +211,19 @@ async function sendWechatMessage() {
             pushContent = match[2].trim();
         }
 
-        // 7. 暴力净化：强制剃掉 AI 不听话加上的动作描写 (括号、星号)
+        // 6. 暴力净化：强制剃掉 AI 不听话加上的动作描写 (括号、星号)
         pushContent = pushContent.replace(/\*[\s\S]*?\*/g, '')      // 删星号 *微笑*
                                  .replace(/（[\s\S]*?）/g, '')     // 删中文括号 （叹气）
                                  .replace(/\([\s\S]*?\)/g, '')       // 删英文括号 (smiles)
                                  .trim();
 
-        if (pushContent === '') pushContent = "（发来了一条只包含动作的信息，已被过滤）";
+        if (pushContent === '') {
+            pushContent = lastMsg; // 兜底：如果被删空了，干脆发原话
+        }
 
         toastr.info("内容已抓取，正在推送到微信...", "微信推送");
 
-        // 8. 发送到 PushPlus
+        // 7. 发送到 PushPlus
         await fetch("http://www.pushplus.plus/send", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -204,9 +236,9 @@ async function sendWechatMessage() {
 
         toastr.success("微信推送发送成功！", "微信推送");
     } catch (error) {
-        chatArr[lastIndex].mes = originalText; // 出错也要恢复现场
+        chatArr[lastUserIndex].mes = originalText; // 出错也要恢复现场
         console.error(error);
-        toastr.error("推送失败，请检查网络", "微信推送");
+        toastr.error("推送过程发生错误，请检查控制台", "微信推送");
     }
 }
 
@@ -223,4 +255,3 @@ function manageTimer() {
         toastr.info("定时推送已关闭", "微信推送");
     }
 }
-

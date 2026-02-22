@@ -118,29 +118,42 @@ async function sendWechatMessage() {
         // 1. 发送指令
         await executeSlashCommands(`/sys ${finalPrompt} | /gen`);
 
-        // 2. 第一版最稳妥的无脑等待逻辑
-        await new Promise(resolve => setTimeout(resolve, 3000)); // 强行等3秒让状态机反应过来
+        // 2. 绝对稳定的等待逻辑
+        await new Promise(resolve => setTimeout(resolve, 3000)); 
         
         while (window.is_generating) {
             await new Promise(resolve => setTimeout(resolve, 1000));
         }
         
-        await new Promise(resolve => setTimeout(resolve, 1500)); // 等待聊天记录写入
+        await new Promise(resolve => setTimeout(resolve, 1500));
 
-        // 3. 第一版的盲抓最后一条逻辑
+        // 3. 【核心修复】：倒序智能抓取
         const context = typeof getContext === 'function' ? getContext() : {};
         const chatArr = context.chat || window.chat;
         
         let lastMsg = "提取失败";
         if (chatArr && chatArr.length > 0) {
-            lastMsg = chatArr[chatArr.length - 1].mes; // 无脑抓最后一条
+            // 从最后一条往前找
+            for (let i = chatArr.length - 1; i >= 0; i--) {
+                const msg = chatArr[i];
+                
+                // 如果看到我们自己发的带有“系统指令”字样的话，直接跳过
+                if (msg.mes.includes("[系统指令：")) continue;
+                
+                // 如果看到系统消息或者用户消息，也跳过
+                if (msg.is_system || msg.is_user || msg.name === 'System') continue;
+                
+                // 排除万难，剩下的绝对是 AI 的真实回复！
+                lastMsg = msg.mes;
+                break;
+            }
         }
 
-        // 4. 清理 <think> 标签
+        // 4. 清理 <think> 标签里的啰嗦思考链，保留所有正文、动作、表情
         let pushContent = lastMsg.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
         
         if (!pushContent || pushContent === '') {
-            pushContent = "收到一条空消息（可能抓取到了空内容）。";
+            pushContent = lastMsg || "收到一条空消息";
         }
 
         let charName = "AI";
@@ -150,7 +163,7 @@ async function sendWechatMessage() {
 
         toastr.info("内容已抓取，正在发送...", "微信推送");
 
-        // 5. 原生 POST 发送
+        // 5. POST 发送
         await fetch("http://www.pushplus.plus/send", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -162,6 +175,19 @@ async function sendWechatMessage() {
         });
 
         toastr.success("微信推送发送成功！", "微信推送");
+
+        // 6. 阅后即焚：把聊天界面上的“系统指令”自动删掉，保持清爽
+        try {
+            if (chatArr && chatArr.length >= 1) {
+                for (let i = chatArr.length - 1; i >= 0; i--) {
+                    if (chatArr[i].is_system && chatArr[i].mes.includes("[系统指令：")) {
+                        chatArr.splice(i, 1);
+                        if (typeof window.printMessages === 'function') window.printMessages();
+                        break;
+                    }
+                }
+            }
+        } catch(e) { console.warn("清理系统消息失败", e); }
 
     } catch (error) {
         console.error("执行出错:", error);
@@ -182,3 +208,4 @@ function manageTimer() {
         toastr.info("定时推送已关闭", "微信推送");
     }
 }
+

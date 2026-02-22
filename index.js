@@ -95,6 +95,11 @@ function initWeChatPushUI(container) {
 }
 
 async function sendWechatMessage() {
+    if (window.is_generating) {
+        toastr.warning("AI正在生成中，请稍后再试", "微信推送");
+        return;
+    }
+
     const token = extension_settings[EXT_NAME].token;
     if (!token) {
         toastr.error("请先输入 Token", "微信推送");
@@ -109,14 +114,16 @@ async function sendWechatMessage() {
         let finalPrompt = "";
         
         if (userPrompt.trim() === '') {
-            finalPrompt = `[系统指令：现在是 ${nowTime}。请主动发一条微信消息给我。]`;
+            finalPrompt = `[系统指令：现在是 ${nowTime}。请主动发一条微信消息给我。不要带任何格式。]`;
         } else {
             let replacedPrompt = userPrompt.replace(/\{\{time\}\}/g, nowTime).replace(/\{\{time_UTC\+8\}\}/g, nowTime);
             finalPrompt = `[系统指令：${replacedPrompt}]`;
         }
 
+        // 1. 发送指令
         await executeSlashCommands(`/sys ${finalPrompt} | /gen`);
 
+        // 2. 绝对能跑通的第一版死等逻辑
         await new Promise(resolve => setTimeout(resolve, 3000)); 
         
         while (window.is_generating) {
@@ -125,6 +132,7 @@ async function sendWechatMessage() {
         
         await new Promise(resolve => setTimeout(resolve, 1500)); 
 
+        // 3. 倒序抓取（避开刚才发的系统指令）
         const context = typeof getContext === 'function' ? getContext() : {};
         const chatArr = context.chat || window.chat;
         
@@ -132,6 +140,7 @@ async function sendWechatMessage() {
         if (chatArr && chatArr.length > 0) {
             for (let i = chatArr.length - 1; i >= 0; i--) {
                 const msg = chatArr[i];
+                // 看到系统指令、用户发言都跳过，直奔AI的回复
                 if (msg.mes.includes("[系统指令：")) continue;
                 if (msg.is_system || msg.is_user || msg.name === 'System') continue;
                 
@@ -140,14 +149,18 @@ async function sendWechatMessage() {
             }
         }
 
+        // 4. 终极防拦截清洗器
         let pushContent = lastMsg;
+        // 先把能找到的 think 标签以及里面的几千字废话全删掉
         pushContent = pushContent.replace(/<think>[\s\S]*?<\/think>/gi, '');
         pushContent = pushContent.replace(/&lt;think&gt;[\s\S]*?&lt;\/think&gt;/gi, '');
-        pushContent = pushContent.replace(/<details>[\s\S]*?<\/details>/gi, '');
+        // 【最核心】：剥离所有残留的 HTML 尖括号，防止 PushPlus 把这段话当成病毒拦截！
+        pushContent = pushContent.replace(/<[^>]+>/g, '');
         pushContent = pushContent.trim();
         
+        // 兜底：如果模型完全只输出了个思考链，把原始消息塞进去至少让你看到点什么
         if (!pushContent || pushContent === '') {
-            pushContent = lastMsg || "收到一条空消息（可能抓取到了空内容）。";
+            pushContent = "【消息正文可能被过滤】原始捕获文本前50字：" + lastMsg.substring(0, 50);
         }
 
         let charName = "AI";
@@ -157,7 +170,8 @@ async function sendWechatMessage() {
 
         toastr.info("内容已抓取，正在发送...", "微信推送");
 
-        await fetch("http://www.pushplus.plus/send", {
+        // 5. 原生 POST 发送，并增加【真实验证器】
+        const response = await fetch("http://www.pushplus.plus/send", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -167,7 +181,28 @@ async function sendWechatMessage() {
             })
         });
 
-        toastr.success("微信推送发送成功！", "微信推送");
+        // 解析 PushPlus 真实的返回值
+        const resData = await response.json();
+        
+        if (resData.code === 200) {
+            toastr.success("微信推送发送成功！", "微信推送");
+        } else {
+            console.error("PushPlus拦截报错:", resData);
+            toastr.error(`PushPlus拒绝发送: ${resData.msg}`, "微信推送");
+        }
+
+        // 6. 顺手清理聊天界面的系统指令
+        try {
+            if (chatArr && chatArr.length >= 1) {
+                for (let i = chatArr.length - 1; i >= 0; i--) {
+                    if (chatArr[i].is_system && chatArr[i].mes.includes("[系统指令：")) {
+                        chatArr.splice(i, 1);
+                        if (typeof window.printMessages === 'function') window.printMessages();
+                        break;
+                    }
+                }
+            }
+        } catch(e) {}
 
     } catch (error) {
         console.error("执行出错:", error);

@@ -132,7 +132,7 @@ async function sendWechatMessage() {
         let userPrompt = extension_settings[EXT_NAME].customPrompt || '';
         
         // --- 修改 1：在 OOC 指令中增加对 <Title> 标签的要求 ---
-        const strictOOC = "【OOC指令：绝对中断当前小说的RP格式！你现在在发真实的微信消息。禁止任何动作描写(如*笑*)、心理描写和思考链。你必须输出两个部分：1. 将微信推送的标题（简短吸引人，比如'你的小可爱拍了拍你'或'早安'）包裹在 <Title> 和 </Title> 标签内。 2. 将50-400字的微信正文包裹在 <WeChat> 和 </WeChat> 标签内！】";
+        const strictOOC = "【OOC指令：绝对中断当前小说的RP格式！你现在在发真实的微信消息。禁止任何动作描写(如*笑*)、心理描写和思考链。你必须输出两个部分：1. 将微信推送的标题（简短吸引人，比如'你的小可爱拍了拍你'或'早安'）包裹在 <Title> 和 </Title> 标签内。 2. 将60-400字的微信正文包裹在 <WeChat> 和 </WeChat> 标签内！微信正文需60-400字，不要太短，可分段！】";
 
         let finalPrompt = "";
         if (userPrompt.trim() === '') {
@@ -221,6 +221,7 @@ function manageTimer() {
         toastr.info("定时推送已关闭", "微信推送");
     }
 }
+
 
 
 

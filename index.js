@@ -128,11 +128,11 @@ async function sendWechatMessage() {
     window.is_generating = true; 
 
     try {
-    const nowTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
+        const nowTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
         let userPrompt = extension_settings[EXT_NAME].customPrompt || '';
         
-        // --- 核心修改 1：强力 OOC 规则，并要求使用 <WeChat> 标签 ---
-        const strictOOC = "【OOC指令：绝对中断当前小说的RP格式！你现在在发真实的微信消息。禁止任何动作描写(如*笑*)、心理描写和思考链。只需输出简短、口语化的一句话微信。必须将你要发的微信正文包裹在 <WeChat> 和 </WeChat> 标签内！】";
+        // --- 修改 1：在 OOC 指令中增加对 <Title> 标签的要求 ---
+        const strictOOC = "【OOC指令：绝对中断当前小说的RP格式！你现在在发真实的微信消息。禁止任何动作描写(如*笑*)、心理描写和思考链。你必须输出两个部分：1. 将微信推送的标题（简短吸引人，比如'你的小可爱拍了拍你'或'早安'）包裹在 <Title> 和 </Title> 标签内。 2. 将30-400字的微信正文包裹在 <WeChat> 和 </WeChat> 标签内！】";
 
         let finalPrompt = "";
         if (userPrompt.trim() === '') {
@@ -153,16 +153,26 @@ async function sendWechatMessage() {
         let messageText = rawResponse.trim();
         let pushContent = "";
         
-        // --- 核心修改 2：精准提取标签内的内容 ---
+        // 获取角色名字用于兜底标题
+        const ctx = typeof getContext === 'function' ? getContext() : SillyTavern.getContext();
+        let charName = ctx.name2 || window.name2 || "AI";
+        let pushTitle = `来自 ${charName} 的新消息`; // 默认兜底标题
+
+        // --- 修改 2：增加对 <Title> 标签的正则提取 ---
+        const titleMatch = messageText.match(/<Title>([\s\S]*?)<\/Title>/i);
+        if (titleMatch && titleMatch[1]) {
+            // 如果提取成功，就用 AI 生成的标题覆盖默认标题
+            pushTitle = titleMatch[1].trim();
+        }
+
+        // 提取正文内容
         const match = messageText.match(/<WeChat>([\s\S]*?)<\/WeChat>/i);
         if (match && match[1]) {
-            // 提取成功，只要标签里的纯文本
             pushContent = match[1].trim(); 
         } else {
-            // 兜底方案：如果 AI 没加标签，执行常规清洗
-            pushContent = messageText.replace(/<think>[\s\S]*?<\/think>/gi, '') // 去除思考链
-                                     .replace(/\*[^*]+\*/g, '')                 // 去除星号动作描写
-                                     .replace(/<[^>]+>/g, '')                   // 去除残留HTML
+            pushContent = messageText.replace(/<think>[\s\S]*?<\/think>/gi, '')
+                                     .replace(/\*[^*]+\*/g, '')
+                                     .replace(/<[^>]+>/g, '')
                                      .trim();
         }
 
@@ -170,12 +180,18 @@ async function sendWechatMessage() {
             pushContent = "【提取失败或被过滤】原始捕获：" + messageText.substring(0, 50);
         }
 
-        // 获取角色名字用于推送标题
-        const ctx = typeof getContext === 'function' ? getContext() : SillyTavern.getContext();
-        let charName = ctx.name2 || window.name2 || "AI";
-
         toastr.info("内容已生成，正在推送到微信...", "微信推送");
         
+        // --- 修改 3：在发送请求时，使用提取出的 pushTitle ---
+        const response = await fetch("http://www.pushplus.plus/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                token: token,
+                title: pushTitle, // 这里换成了 AI 生成的标题
+                content: pushContent
+            })
+        });
         // 4. 发送到 PushPlus
         const response = await fetch("http://www.pushplus.plus/send", {
             method: "POST",
@@ -216,6 +232,7 @@ function manageTimer() {
         toastr.info("定时推送已关闭", "微信推送");
     }
 }
+
 
 
 

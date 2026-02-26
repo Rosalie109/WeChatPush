@@ -114,8 +114,15 @@ const html = `
     $('#wp_mode').on('change', function() {
         const mode = $(this).val();
         extension_settings[EXT_NAME].mode = mode;
-        $('#wp_interval_settings').toggle(mode === 'interval');
-        $('#wp_schedule_settings').toggle(mode === 'schedule');
+        
+        if (mode === 'interval') {
+            $('#wp_interval_settings').show();
+            $('#wp_schedule_settings').hide();
+        } else {
+            $('#wp_interval_settings').hide();
+            $('#wp_schedule_settings').show();
+            refreshTaskList(); // 确保切换时刷新列表
+        }
     });
 
     // 添加任务逻辑
@@ -160,7 +167,6 @@ const html = `
     
     $('#wp_interval').on('input', function() {
         extension_settings[EXT_NAME].intervalMinutes = Number($(this).val());
-        if (extension_settings[EXT_NAME].enabled) manageTimer();
     });
 
     $('#wp_enable').on('change', function() {
@@ -345,6 +351,7 @@ function manageTimer() {
 
     toastr.success("推送调度器已启动", "微信推送");
 }
+
 
 
 

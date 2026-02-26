@@ -248,7 +248,7 @@ async function sendWechatMessage(overridePrompt=null) {
         const nowTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
         let userPrompt = (overridePrompt && overridePrompt.trim() !== "") ? overridePrompt : (extension_settings[EXT_NAME].customPrompt || '');
         
-        const strictOOC = "【OOC指令：绝对中断当前小说的RP格式！你现在在发真实的微信消息。禁止任何动作描写(如*笑*)、心理描写、思考链和表情包。你必须输出两个部分：1. 将微信推送的标题包裹在 <Title> 和 </Title> 标签内。 2. 将60-400字的微信正文纯文字包裹在 <WeChat> 和 </WeChat> 标签内！微信正文需60-400字，不要太短，可分段！】";
+        const strictOOC = "【OOC指令：绝对中断当前小说的RP格式！你现在在发真实的微信消息。禁止任何动作描写(如*笑*)、心理描写、思考链和表情包。你必须输出两个部分：1. 将微信推送的标题包裹在 <Title> 和 </Title> 标签内。 2. 将60-300字的微信正文纯文字包裹在 <WeChat> 和 </WeChat> 标签内！微信正文务必60-300字，不要太短，可分1-4段！】";
         
         let finalPrompt = "";
         if (userPrompt.trim() === '') {
@@ -383,4 +383,5 @@ function checkScheduleTasks() {
         refreshTaskList();
     }
 }
+
 

@@ -52,6 +52,7 @@ function refreshTaskList() {
 }
 
 function initWeChatPushUI(container) {
+    $('#wechat-push-extension').remove();
     const html = `
     <div id="wechat-push-extension" class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
@@ -163,9 +164,8 @@ function initWeChatPushUI(container) {
         }
         manageTimer();
     });
-
-    // 添加任务
-    $('#wp_add_task').off('click').on('click', function() {
+// 添加任务
+    $('#extensions_settings').off('click', '#wp_add_task').on('click', '#wp_add_task', function() {
         const time = $('#task_time').val();
         const freq = $('#task_freq').val();
         const date = $('#task_date').val();
@@ -174,26 +174,35 @@ function initWeChatPushUI(container) {
         if (!time) return toastr.error("请选择时间");
         if (freq === 'once' && !date) return toastr.error("请选择具体日期");
         
-        extension_settings[EXT_NAME].scheduledTasks.push({ time, freq, date, prompt, enabled: true });
+        // 确保数组不为空
+        if (!extension_settings[EXT_NAME].scheduledTasks) {
+            extension_settings[EXT_NAME].scheduledTasks = [];
+        }
         
-        const ctx = typeof getContext === 'function' ? getContext() : SillyTavern.getContext();
-        ctx.saveSettingsDebounced(); 
+        extension_settings[EXT_NAME].scheduledTasks.push({ 
+            time, freq, date, prompt, enabled: true 
+        });
+        
+        // 安全调用保存
+        if (typeof saveSettingsDebounced === 'function') {
+            saveSettingsDebounced();
+        }
         
         refreshTaskList();
         toastr.success("提醒已添加");
     });
 
-    // 删除任务 (使用事件委托绑定到固定的父节点上)
-    $('#wp_task_list').off('click').on('click', '.wp_del_task', function() {
+    // 删除任务
+    $('#extensions_settings').off('click', '.wp_del_task').on('click', '.wp_del_task', function() {
         const index = $(this).data('index');
         extension_settings[EXT_NAME].scheduledTasks.splice(index, 1);
         
-        const ctx = typeof getContext === 'function' ? getContext() : SillyTavern.getContext();
-        ctx.saveSettingsDebounced(); 
+        if (typeof saveSettingsDebounced === 'function') {
+            saveSettingsDebounced();
+        }
         
         refreshTaskList();
     });
-
     $('#wp_send_now').off('click').on('click', () => sendWechatMessage(null));
 
     // 初始化渲染
@@ -374,3 +383,4 @@ function checkScheduleTasks() {
         refreshTaskList();
     }
 }
+

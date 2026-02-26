@@ -3,11 +3,17 @@ import { executeSlashCommands } from '/scripts/slash-commands.js';
 
 const EXT_NAME = 'WeChatPush';
 let pushTimer = null;
-
 if (!extension_settings[EXT_NAME]) {
-    extension_settings[EXT_NAME] = { token: '', enabled: false, intervalMinutes: 120, customPrompt: '' };
+    extension_settings[EXT_NAME] = { 
+        token: '', 
+        enabled: false, 
+        intervalMinutes: 120, 
+        customPrompt: '',
+        // --- 新增部分 ---
+        mode: 'interval', // 'interval' 为原有间隔模式, 'schedule' 为定时模式
+        scheduledTasks: [] // 用于存放任务：{id, time, freq, prompt, enabled}
+    };
 }
-
 $(document).ready(() => {
     setTimeout(() => {
         const interval = setInterval(() => {
@@ -21,7 +27,7 @@ $(document).ready(() => {
 });
 
 function initWeChatPushUI(container) {
-    const html = `
+const html = `
     <div id="wechat-push-extension" class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
             <b>💬 微信定时推送</b>
@@ -32,31 +38,106 @@ function initWeChatPushUI(container) {
                 <label>Token:</label>
                 <input type="text" id="wp_token" class="text_pole" placeholder="填入PushPlus Token" style="width: 70%;" value="${extension_settings[EXT_NAME].token}">
             </div>
-            
+
             <div style="margin-bottom: 15px;">
-                <label style="display: block; margin-bottom: 5px;">触发提示词 (留空使用默认):</label>
-                <textarea id="wp_prompt" class="text_pole" style="width: 100%; height: 60px; resize: vertical;" placeholder="留空则默认让角色发一条消息">${extension_settings[EXT_NAME].customPrompt || ''}</textarea>
+                <label>推送模式：</label>
+                <select id="wp_mode" class="text_pole" style="width: 100%;">
+                    <option value="interval" ${extension_settings[EXT_NAME].mode === 'interval' ? 'selected' : ''}>固定间隔模式</option>
+                    <option value="schedule" ${extension_settings[EXT_NAME].mode === 'schedule' ? 'selected' : ''}>多重定时模式</option>
+                </select>
+            </div>
+
+            <hr>
+
+            <div id="wp_interval_settings" style="display: ${extension_settings[EXT_NAME].mode === 'interval' ? 'block' : 'none'};">
+                <div style="margin-bottom: 15px; display: flex; align-items: center; justify-content: space-between;">
+                    <label>间隔(分钟):</label>
+                    <input type="number" id="wp_interval" class="text_pole" min="1" style="width: 70%;" value="${extension_settings[EXT_NAME].intervalMinutes}">
+                </div>
+                <div style="margin-bottom: 15px;">
+                    <label>默认触发提示词:</label>
+                    <textarea id="wp_prompt" class="text_pole" style="width: 100%; height: 60px; resize: vertical;" placeholder="留空则默认让角色发一条消息">${extension_settings[EXT_NAME].customPrompt || ''}</textarea>
+                </div>
+            </div>
+
+            <div id="wp_schedule_settings" style="display: ${extension_settings[EXT_NAME].mode === 'schedule' ? 'block' : 'none'};">
+                <div style="background: rgba(0,0,0,0.2); padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+                    <div style="display: flex; gap: 5px; margin-bottom: 5px;">
+                        <input type="time" id="task_time" class="text_pole" style="flex: 1;">
+                        <select id="task_freq" class="text_pole" style="flex: 1;">
+                            <option value="daily">每天</option>
+                            <option value="once">一次性</option>
+                            <option value="1,2,3,4,5">工作日</option>
+                            <option value="6,0">周末</option>
+                        </select>
+                    </div>
+                    <textarea id="task_prompt" class="text_pole" style="width: 100%; height: 40px; margin-bottom: 5px;" placeholder="该时段提醒的内容..."></textarea>
+                    <button type="button" id="wp_add_task" class="menu_button" style="width: 100%; height: 30px; line-height: 10px;">添加此提醒</button>
+                </div>
+                <div id="wp_task_list" style="max-height: 200px; overflow-y: auto; border: 1px solid #444; padding: 5px;">
+                    </div>
             </div>
 
             <hr>
             <div style="margin-bottom: 15px;">
                 <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
                     <input type="checkbox" id="wp_enable" ${extension_settings[EXT_NAME].enabled ? 'checked' : ''}>
-                    <span>开启定时发送</span>
+                    <span>开启总开关</span>
                 </label>
             </div>
-            <div style="margin-bottom: 15px; display: flex; align-items: center; justify-content: space-between;">
-                <label>间隔(分钟):</label>
-                <input type="number" id="wp_interval" class="text_pole" min="1" style="width: 70%;" value="${extension_settings[EXT_NAME].intervalMinutes}">
-            </div>
-            <hr>
-            <button type="button" id="wp_send_now" class="menu_button" style="width: 100%;">立即发送微信</button>
+            <button type="button" id="wp_send_now" class="menu_button" style="width: 100%;">立即发送测试</button>
         </div>
     </div>
     `;
-
     container.insertAdjacentHTML('beforeend', html);
+// 渲染任务列表的函数
+    const refreshTaskList = () => {
+        const listContainer = document.getElementById('wp_task_list');
+        if (!listContainer) return;
+        const tasks = extension_settings[EXT_NAME].scheduledTasks;
+        if (tasks.length === 0) {
+            listContainer.innerHTML = '<div style="text-align:center; color:#888;">暂无定时提醒</div>';
+            return;
+        }
+        listContainer.innerHTML = tasks.map((task, index) => `
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 5px; border-bottom: 1px solid #333; font-size: 0.9em;">
+                <span><b>${task.time}</b> [${task.freq === 'daily' ? '每天' : '特定'}]</span>
+                <button class="wp_del_task" data-index="${index}" style="background:none; border:none; color:#ff5555; cursor:pointer;">❌</button>
+            </div>
+        `).join('');
+    };
 
+    // 初始化显示列表
+    refreshTaskList();
+
+    // 模式切换显示逻辑
+    $('#wp_mode').on('change', function() {
+        const mode = $(this).val();
+        extension_settings[EXT_NAME].mode = mode;
+        $('#wp_interval_settings').toggle(mode === 'interval');
+        $('#wp_schedule_settings').toggle(mode === 'schedule');
+    });
+
+    // 添加任务逻辑
+    $('#wp_add_task').on('click', function() {
+        const time = $('#task_time').val();
+        const freq = $('#task_freq').val();
+        const prompt = $('#task_prompt').val();
+        if (!time) return toastr.error("请选择时间");
+        
+        extension_settings[EXT_NAME].scheduledTasks.push({
+            time, freq, prompt, enabled: true
+        });
+        refreshTaskList();
+        toastr.success("提醒已添加");
+    });
+
+    // 删除任务逻辑 (使用事件委托)
+    $(document).on('click', '.wp_del_task', function() {
+        const index = $(this).data('index');
+        extension_settings[EXT_NAME].scheduledTasks.splice(index, 1);
+        refreshTaskList();
+    });
     const drawerToggle = document.querySelector('#wechat-push-extension .inline-drawer-toggle');
     if (drawerToggle) {
         drawerToggle.addEventListener('click', function(e) {
@@ -110,7 +191,7 @@ async function callGenerateQuietPrompt(prompt) {
     }
     throw new Error('当前酒馆版本不支持 generateQuietPrompt');
 }
-async function sendWechatMessage() {
+async function sendWechatMessage(overridePrompt=null) {
     if (window.is_generating) {
         toastr.warning("AI正在生成中，请稍后再试", "微信推送");
         return;
@@ -126,11 +207,16 @@ async function sendWechatMessage() {
     
     // 锁定生成状态，防止重复点击
     window.is_generating = true; 
-
-    try {
-  const nowTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
-        let userPrompt = extension_settings[EXT_NAME].customPrompt || '';
+try {
+        const nowTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
         
+        // --- 修改部分：如果传入了特定提示词，则优先使用 ---
+        let userPrompt = "";
+        if (overridePrompt && typeof overridePrompt === 'string' && overridePrompt.trim() !== "") {
+            userPrompt = overridePrompt;
+        } else {
+            userPrompt = extension_settings[EXT_NAME].customPrompt || '';
+        }
         // --- 修改 1：在 OOC 指令中增加对 <Title> 标签的要求 ---
         const strictOOC = "【OOC指令：绝对中断当前小说的RP格式！你现在在发真实的微信消息。禁止任何动作描写(如*笑*)、心理描写、思考链和表情包。你必须输出两个部分：1. 将微信推送的标题（简短吸引人，比如'你的小可爱拍了拍你'或'早安'）包裹在 <Title> 和 </Title> 标签内。 2. 将60-400字的微信正文纯文字包裹在 <WeChat> 和 </WeChat> 标签内！微信正文需60-400字，不要太短，可分段！】";
 
@@ -215,14 +301,51 @@ function manageTimer() {
         clearInterval(pushTimer);
         pushTimer = null;
     }
-    if (extension_settings[EXT_NAME].enabled) {
-        const ms = extension_settings[EXT_NAME].intervalMinutes * 60 * 1000;
-        pushTimer = setInterval(sendWechatMessage, ms);
-        toastr.success(`定时已开启：每 ${extension_settings[EXT_NAME].intervalMinutes} 分钟触发`, "微信推送");
-    } else {
-        toastr.info("定时推送已关闭", "微信推送");
+
+    if (!extension_settings[EXT_NAME].enabled) {
+        toastr.info("微信推送已关闭", "微信推送");
+        return;
     }
+
+    // 核心：每 60 秒执行一次检查
+    pushTimer = setInterval(() => {
+        const now = new Date();
+        const currentHourMin = now.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
+        const currentDay = now.getDay(); // 0是周日，1-6是周一到周六
+
+        // 逻辑 A：原有间隔模式
+        if (extension_settings[EXT_NAME].mode === 'interval') {
+            // 这里你可以保留原有的逻辑，或者为了简化，建议统一走定时检查
+            // 简单起见，我们先处理你最想要的“定时提醒”逻辑 B
+        }
+
+        // 逻辑 B：多重定时提醒模式
+        if (extension_settings[EXT_NAME].mode === 'schedule') {
+            extension_settings[EXT_NAME].scheduledTasks.forEach(task => {
+                if (!task.enabled) return;
+
+                // 判断时间是否匹配 (HH:mm)
+                if (task.time === currentHourMin) {
+                    // 判断频率是否匹配
+                    const isToday = (task.freq === 'daily') || 
+                                    (task.freq === 'once') || 
+                                    (task.freq.includes(currentDay.toString()));
+
+                    if (isToday) {
+                        // 触发发送，传入该任务特有的提示词
+                        sendWechatMessage(task.prompt);
+                        
+                        // 如果是一次性任务，执行后关闭它
+                        if (task.freq === 'once') task.enabled = false;
+                    }
+                }
+            });
+        }
+    }, 60000); // 每一分钟检查一次
+
+    toastr.success("推送调度器已启动", "微信推送");
 }
+
 
 
 

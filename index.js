@@ -93,7 +93,23 @@ function initWeChatPushUI(container) {
         manageTimer();
     }
 }
-
+// 兼容不同版本酒馆的静默生成函数
+async function callGenerateQuietPrompt(prompt) {
+    const ctx = typeof getContext === 'function' ? getContext() : SillyTavern.getContext();
+    if (typeof ctx.generateQuietPrompt === 'function') {
+        try {
+            // 新版 API (ST 1.13.2+)
+            return await ctx.generateQuietPrompt({
+                quietPrompt: prompt,
+                skipWIAN: false
+            });
+        } catch (e) {
+            // 旧版 API 回退
+            return await ctx.generateQuietPrompt(prompt);
+        }
+    }
+    throw new Error('当前酒馆版本不支持 generateQuietPrompt');
+}
 async function sendWechatMessage() {
     if (window.is_generating) {
         toastr.warning("AI正在生成中，请稍后再试", "微信推送");
@@ -106,7 +122,10 @@ async function sendWechatMessage() {
         return;
     }
     
-    toastr.info("指令已发送，等待 AI 生成...", "微信推送");
+    toastr.info("静默指令已发送，等待 AI 生成...", "微信推送");
+    
+    // 锁定生成状态，防止重复点击
+    window.is_generating = true; 
 
     try {
         const nowTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
@@ -120,57 +139,53 @@ async function sendWechatMessage() {
             finalPrompt = `[系统指令：${replacedPrompt}]`;
         }
 
-        // 1. 发送指令
-        await executeSlashCommands(`/sys ${finalPrompt} | /gen`);
-
-        // 2. 绝对能跑通的第一版死等逻辑
-        await new Promise(resolve => setTimeout(resolve, 3000)); 
+        // 1. 发送静默指令并直接获取结果 (解决提示词可见 & 获取不到最新消息的问题)
+        const rawResponse = await callGenerateQuietPrompt(finalPrompt);
         
-        while (window.is_generating) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
+        if (!rawResponse || rawResponse.trim() === '') {
+            toastr.error("AI 生成了空消息，请检查模型状态", "微信推送");
+            return;
         }
-        
-        await new Promise(resolve => setTimeout(resolve, 1500)); 
 
-        // 3. 倒序抓取（避开刚才发的系统指令）
-        const context = typeof getContext === 'function' ? getContext() : {};
-        const chatArr = context.chat || window.chat;
+        const messageText = rawResponse.trim();
+        const ctx = typeof getContext === 'function' ? getContext() : SillyTavern.getContext();
+
+        // 2. 将生成的消息手动添加到酒馆聊天界面 (参考 AutoPulse 逻辑)
+        const message = {
+            name: ctx.name2 || window.name2,
+            is_user: false,
+            mes: messageText,
+            force_avatar: ctx.getThumbnailUrl ? ctx.getThumbnailUrl('avatar', ctx.characters[ctx.characterId]?.avatar) : undefined,
+            extra: { wechat_push: true }
+        };
         
-        let lastMsg = "提取失败";
-        if (chatArr && chatArr.length > 0) {
-            for (let i = chatArr.length - 1; i >= 0; i--) {
-                const msg = chatArr[i];
-                // 看到系统指令、用户发言都跳过，直奔AI的回复
-                if (msg.mes.includes("[系统指令：")) continue;
-                if (msg.is_system || msg.is_user || msg.name === 'System') continue;
-                
-                lastMsg = msg.mes;
-                break;
+        if (ctx.chat) {
+            ctx.chat.push(message);
+            const messageId = ctx.chat.length - 1;
+            if (typeof ctx.addOneMessage === 'function') {
+                ctx.addOneMessage(message, { insertAfter: messageId - 1 });
+            }
+            if (typeof ctx.saveChat === 'function') {
+                await ctx.saveChat();
             }
         }
 
-        // 4. 终极防拦截清洗器
-        let pushContent = lastMsg;
-        // 先把能找到的 think 标签以及里面的几千字废话全删掉
+        // 3. 终极防拦截清洗器 (清洗准备发给微信的文本)
+        let pushContent = messageText;
         pushContent = pushContent.replace(/<think>[\s\S]*?<\/think>/gi, '');
         pushContent = pushContent.replace(/&lt;think&gt;[\s\S]*?&lt;\/think&gt;/gi, '');
-        // 【最核心】：剥离所有残留的 HTML 尖括号，防止 PushPlus 把这段话当成病毒拦截！
         pushContent = pushContent.replace(/<[^>]+>/g, '');
         pushContent = pushContent.trim();
         
-        // 兜底：如果模型完全只输出了个思考链，把原始消息塞进去至少让你看到点什么
         if (!pushContent || pushContent === '') {
-            pushContent = "【消息正文可能被过滤】原始捕获文本前50字：" + lastMsg.substring(0, 50);
+            pushContent = "【消息正文可能被过滤】原始捕获文本前50字：" + messageText.substring(0, 50);
         }
 
-        let charName = "AI";
-        if (context.name2) charName = context.name2;
-        else if (window.name2) charName = window.name2;
-        else if (window.characters && window.this_chid !== undefined) charName = window.characters[window.this_chid].name;
+        let charName = ctx.name2 || window.name2 || "AI";
 
-        toastr.info("内容已抓取，正在发送...", "微信推送");
-
-        // 5. 原生 POST 发送，并增加【真实验证器】
+        toastr.info("内容已生成，正在推送到微信...", "微信推送");
+        
+        // 4. 发送到 PushPlus
         const response = await fetch("http://www.pushplus.plus/send", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -180,10 +195,8 @@ async function sendWechatMessage() {
                 content: pushContent
             })
         });
-
-        // 解析 PushPlus 真实的返回值
-        const resData = await response.json();
         
+        const resData = await response.json();
         if (resData.code === 200) {
             toastr.success("微信推送发送成功！", "微信推送");
         } else {
@@ -191,25 +204,14 @@ async function sendWechatMessage() {
             toastr.error(`PushPlus拒绝发送: ${resData.msg}`, "微信推送");
         }
 
-        // 6. 顺手清理聊天界面的系统指令
-        try {
-            if (chatArr && chatArr.length >= 1) {
-                for (let i = chatArr.length - 1; i >= 0; i--) {
-                    if (chatArr[i].is_system && chatArr[i].mes.includes("[系统指令：")) {
-                        chatArr.splice(i, 1);
-                        if (typeof window.printMessages === 'function') window.printMessages();
-                        break;
-                    }
-                }
-            }
-        } catch(e) {}
-
     } catch (error) {
         console.error("执行出错:", error);
-        toastr.error("执行过程发生错误", "微信推送");
+        toastr.error(`执行过程发生错误: ${error.message}`, "微信推送");
+    } finally {
+        // 无论成功失败，解锁生成状态
+        window.is_generating = false; 
     }
 }
-
 function manageTimer() {
     if (pushTimer) {
         clearInterval(pushTimer);
@@ -223,3 +225,4 @@ function manageTimer() {
         toastr.info("定时推送已关闭", "微信推送");
     }
 }
+

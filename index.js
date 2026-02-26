@@ -151,6 +151,8 @@ async function sendWechatMessage() {
         }
 
         let messageText = rawResponse.trim();
+        // 清除 AI 可能会回显的控制字符或转义后的换行符字面量
+        messageText = messageText.replace(/\\n/g, '\n');
         let pushContent = "";
         
         // 获取角色名字用于兜底标题
@@ -159,12 +161,12 @@ async function sendWechatMessage() {
         let pushTitle = `来自 ${charName} 的新消息`; // 默认兜底标题
 
         // --- 修改 2：增加对 <Title> 标签的正则提取 ---
+        // 使用更强力的正则，并对结果进行 trim
         const titleMatch = messageText.match(/<Title>([\s\S]*?)<\/Title>/i);
         if (titleMatch && titleMatch[1]) {
-            // 如果提取成功，就用 AI 生成的标题覆盖默认标题
-            pushTitle = titleMatch[1].trim();
+        pushTitle = titleMatch[1].replace(/[\r\n]/g, '').trim(); // 强制去掉标题内的换行
         }
-
+       
         // 提取正文内容
         const match = messageText.match(/<WeChat>([\s\S]*?)<\/WeChat>/i);
         if (match && match[1]) {
@@ -221,6 +223,7 @@ function manageTimer() {
         toastr.info("定时推送已关闭", "微信推送");
     }
 }
+
 
 
 

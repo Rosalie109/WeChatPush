@@ -128,11 +128,10 @@ async function sendWechatMessage() {
     window.is_generating = true; 
 
     try {
-        // --- 修改点 1：强化系统提示词 ---
-        const nowTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
+    const nowTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
         let userPrompt = extension_settings[EXT_NAME].customPrompt || '';
         
-        // 强力 OOC 指令，要求必须使用 <WeChat> 标签
+        // --- 核心修改 1：强力 OOC 规则，并要求使用 <WeChat> 标签 ---
         const strictOOC = "【OOC指令：绝对中断当前小说的RP格式！你现在在发真实的微信消息。禁止任何动作描写(如*笑*)、心理描写和思考链。只需输出简短、口语化的一句话微信。必须将你要发的微信正文包裹在 <WeChat> 和 </WeChat> 标签内！】";
 
         let finalPrompt = "";
@@ -151,17 +150,16 @@ async function sendWechatMessage() {
             return;
         }
 
-        // --- 修改点 2：精准提取标签内的内容 ---
         let messageText = rawResponse.trim();
         let pushContent = "";
         
-        // 使用正则捕获 <WeChat> 里的内容
+        // --- 核心修改 2：精准提取标签内的内容 ---
         const match = messageText.match(/<WeChat>([\s\S]*?)<\/WeChat>/i);
         if (match && match[1]) {
             // 提取成功，只要标签里的纯文本
             pushContent = match[1].trim(); 
         } else {
-            // 兜底方案：如果 AI 没听话没加标签，执行常规清洗
+            // 兜底方案：如果 AI 没加标签，执行常规清洗
             pushContent = messageText.replace(/<think>[\s\S]*?<\/think>/gi, '') // 去除思考链
                                      .replace(/\*[^*]+\*/g, '')                 // 去除星号动作描写
                                      .replace(/<[^>]+>/g, '')                   // 去除残留HTML
@@ -171,42 +169,9 @@ async function sendWechatMessage() {
         if (!pushContent || pushContent === '') {
             pushContent = "【提取失败或被过滤】原始捕获：" + messageText.substring(0, 50);
         }
-        }
 
-        //const messageText = rawResponse.trim();
-        //const ctx = typeof getContext === 'function' ? getContext() : SillyTavern.getContext();
-
-        // 2. 将生成的消息手动添加到酒馆聊天界面 (参考 AutoPulse 逻辑)
-        //const message = {
-        //   name: ctx.name2 || window.name2,
-        //    is_user: false,
-        //    mes: messageText,
-        //    force_avatar: ctx.getThumbnailUrl ? ctx.getThumbnailUrl('avatar', ctx.characters[ctx.characterId]?.avatar) : undefined,
-        //    extra: { wechat_push: true }
-        //};
-        
-        //if (ctx.chat) {
-        //    ctx.chat.push(message);
-        //    const messageId = ctx.chat.length - 1;
-        //    if (typeof ctx.addOneMessage === 'function') {
-        //        ctx.addOneMessage(message, { insertAfter: messageId - 1 });
-        //    }
-        //    if (typeof ctx.saveChat === 'function') {
-        //        await ctx.saveChat();
-        //    }
-        //}
-
-        // 3. 终极防拦截清洗器 (清洗准备发给微信的文本)
-        let pushContent = messageText;
-        pushContent = pushContent.replace(/<think>[\s\S]*?<\/think>/gi, '');
-        pushContent = pushContent.replace(/&lt;think&gt;[\s\S]*?&lt;\/think&gt;/gi, '');
-        pushContent = pushContent.replace(/<[^>]+>/g, '');
-        pushContent = pushContent.trim();
-        
-        if (!pushContent || pushContent === '') {
-            pushContent = "【消息正文可能被过滤】原始捕获文本前50字：" + messageText.substring(0, 50);
-        }
-
+        // 获取角色名字用于推送标题
+        const ctx = typeof getContext === 'function' ? getContext() : SillyTavern.getContext();
         let charName = ctx.name2 || window.name2 || "AI";
 
         toastr.info("内容已生成，正在推送到微信...", "微信推送");
@@ -251,5 +216,6 @@ function manageTimer() {
         toastr.info("定时推送已关闭", "微信推送");
     }
 }
+
 
 

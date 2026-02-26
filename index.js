@@ -39,8 +39,9 @@ function refreshTaskList() {
     
     listContainer.innerHTML = tasks.map((task, index) => {
         let freqLabel = task.freq === 'daily' ? '每天' : task.freq === 'once' ? `一次性(${task.date})` : '特定星期';
+        let statusStyle = task.enabled ? '' : 'opacity: 0.5;';
         return `
-        <div class="autopulse-task-item" style="display: flex; justify-content: space-between; align-items: center; padding: 5px; border-bottom: 1px solid #333;">
+        <div style="display: flex; justify-content: space-between; align-items: center; padding: 5px; border-bottom: 1px solid #333; ${statusStyle}">
             <div style="flex: 1;">
                 <b>${task.time}</b> <span style="font-size: 0.9em; color: #aaa;">[${freqLabel}]</span>
                 <div style="font-size: 0.8em; color: #ccc; margin-top: 2px;">提示词: ${task.prompt || '默认'}</div>
@@ -70,16 +71,18 @@ function initWeChatPushUI(container) {
                 </select>
             </div>
             <hr>
+            
             <div id="wp_interval_settings" style="display: ${extension_settings[EXT_NAME].mode === 'interval' ? 'block' : 'none'};">
                 <div style="margin-bottom: 15px; display: flex; align-items: center; justify-content: space-between;">
                     <label>间隔(分钟):</label>
                     <input type="number" id="wp_interval" class="text_pole" min="1" style="width: 70%;" value="${extension_settings[EXT_NAME].intervalMinutes}">
                 </div>
                 <div style="margin-bottom: 15px;">
-                    <label>默认触发提示词:</label>
+                    <label style="display: block; margin-bottom: 5px;">触发提示词 (留空使用默认):</label>
                     <textarea id="wp_prompt" class="text_pole" style="width: 100%; height: 60px; resize: vertical;" placeholder="留空则默认让角色发一条消息">${extension_settings[EXT_NAME].customPrompt || ''}</textarea>
                 </div>
             </div>
+
             <div id="wp_schedule_settings" style="display: ${extension_settings[EXT_NAME].mode === 'schedule' ? 'block' : 'none'};">
                 <div style="background: rgba(0,0,0,0.2); padding: 10px; border-radius: 5px; margin-bottom: 10px;">
                     <div style="display: flex; gap: 5px; margin-bottom: 5px;">
@@ -98,6 +101,7 @@ function initWeChatPushUI(container) {
                 <div id="wp_task_list" style="max-height: 200px; overflow-y: auto; border: 1px solid #444; padding: 5px;"></div>
             </div>
             <hr>
+            
             <div style="margin-bottom: 15px;">
                 <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
                     <input type="checkbox" id="wp_enable" ${extension_settings[EXT_NAME].enabled ? 'checked' : ''}>
@@ -108,61 +112,9 @@ function initWeChatPushUI(container) {
         </div>
     </div>
     `;
-    
     container.insertAdjacentHTML('beforeend', html);
 
-    $('#task_freq').on('change', function() {
-        const isOnce = $(this).val() === 'once';
-        $('#task_date').toggle(isOnce); 
-    });
-
-    $('#wp_mode').on('change', function() {
-        const mode = $(this).val();
-        extension_settings[EXT_NAME].mode = mode;
-        
-        if (mode === 'interval') {
-            $('#wp_interval_settings').show();
-            $('#wp_schedule_settings').hide();
-        } else {
-            $('#wp_interval_settings').hide();
-            $('#wp_schedule_settings').show();
-            refreshTaskList(); 
-        }
-        
-        const ctx = typeof getContext === 'function' ? getContext() : SillyTavern.getContext();
-        ctx.saveSettingsDebounced();
-        manageTimer();
-    });
-
-    $('#wp_add_task').on('click', function() {
-        const time = $('#task_time').val();
-        const freq = $('#task_freq').val();
-        const date = $('#task_date').val();
-        const prompt = $('#task_prompt').val();
-        
-        if (!time) return toastr.error('请选择时间');
-        if (freq === 'once' && !date) return toastr.error('请选择具体日期');
-        
-        extension_settings[EXT_NAME].scheduledTasks.push({
-            time, freq, date, prompt
-        });
-        
-        const ctx = typeof getContext === 'function' ? getContext() : SillyTavern.getContext();
-        ctx.saveSettingsDebounced(); 
-        
-        refreshTaskList();
-        toastr.success('提醒已添加');
-    });
-
-    $(document).on('click', '.wp_del_task', function() {
-        const index = $(this).data('index');
-        extension_settings[EXT_NAME].scheduledTasks.splice(index, 1);
-        refreshTaskList();
-        
-        const ctx = typeof getContext === 'function' ? getContext() : SillyTavern.getContext();
-        ctx.saveSettingsDebounced(); 
-    });
-
+    // 折叠面板逻辑
     const drawerToggle = document.querySelector('#wechat-push-extension .inline-drawer-toggle');
     if (drawerToggle) {
         drawerToggle.addEventListener('click', function(e) {
@@ -180,36 +132,81 @@ function initWeChatPushUI(container) {
         });
     }
 
-    $('#wp_token').on('input', function() { 
-        extension_settings[EXT_NAME].token = $(this).val(); 
-        const ctx = typeof getContext === 'function' ? getContext() : SillyTavern.getContext();
-        ctx.saveSettingsDebounced();
-    });
-
-    $('#wp_prompt').on('input', function() { 
-        extension_settings[EXT_NAME].customPrompt = $(this).val(); 
-        const ctx = typeof getContext === 'function' ? getContext() : SillyTavern.getContext();
-        ctx.saveSettingsDebounced();
-    });
-
+    // 事件绑定
+    $('#wp_token').on('input', function() { saveSetting('token', $(this).val()); });
+    $('#wp_prompt').on('input', function() { saveSetting('customPrompt', $(this).val()); });
     $('#wp_interval').on('input', function() {
-        extension_settings[EXT_NAME].intervalMinutes = Number($(this).val());
-        const ctx = typeof getContext === 'function' ? getContext() : SillyTavern.getContext();
-        ctx.saveSettingsDebounced();
-        if (extension_settings[EXT_NAME].enabled && extension_settings[EXT_NAME].mode === 'interval') manageTimer();
-    });
-
-    $('#wp_enable').on('change', function() {
-        extension_settings[EXT_NAME].enabled = $(this).is(':checked');
-        const ctx = typeof getContext === 'function' ? getContext() : SillyTavern.getContext();
-        ctx.saveSettingsDebounced();
+        saveSetting('intervalMinutes', Number($(this).val()));
         manageTimer();
     });
 
-    $('#wp_send_now').on('click', () => sendWechatMessage());
+    $('#wp_enable').on('change', function() {
+        saveSetting('enabled', $(this).is(':checked'));
+        manageTimer();
+    });
 
+    $('#task_freq').on('change', function() {
+        $('#task_date').toggle($(this).val() === 'once'); 
+    });
+
+    $('#wp_mode').on('change', function() {
+        const mode = $(this).val();
+        saveSetting('mode', mode);
+        
+        if (mode === 'interval') {
+            $('#wp_interval_settings').show();
+            $('#wp_schedule_settings').hide();
+        } else {
+            $('#wp_interval_settings').hide();
+            $('#wp_schedule_settings').show();
+            refreshTaskList(); 
+        }
+        manageTimer();
+    });
+
+    // 添加任务
+    $('#wp_add_task').off('click').on('click', function() {
+        const time = $('#task_time').val();
+        const freq = $('#task_freq').val();
+        const date = $('#task_date').val();
+        const prompt = $('#task_prompt').val();
+        
+        if (!time) return toastr.error("请选择时间");
+        if (freq === 'once' && !date) return toastr.error("请选择具体日期");
+        
+        extension_settings[EXT_NAME].scheduledTasks.push({ time, freq, date, prompt, enabled: true });
+        
+        const ctx = typeof getContext === 'function' ? getContext() : SillyTavern.getContext();
+        ctx.saveSettingsDebounced(); 
+        
+        refreshTaskList();
+        toastr.success("提醒已添加");
+    });
+
+    // 删除任务 (使用事件委托绑定到固定的父节点上)
+    $('#wp_task_list').off('click').on('click', '.wp_del_task', function() {
+        const index = $(this).data('index');
+        extension_settings[EXT_NAME].scheduledTasks.splice(index, 1);
+        
+        const ctx = typeof getContext === 'function' ? getContext() : SillyTavern.getContext();
+        ctx.saveSettingsDebounced(); 
+        
+        refreshTaskList();
+    });
+
+    $('#wp_send_now').off('click').on('click', () => sendWechatMessage(null));
+
+    // 初始化渲染
     refreshTaskList();
-    $('#wp_mode').trigger('change'); 
+    if (extension_settings[EXT_NAME].enabled) {
+        manageTimer();
+    }
+}
+
+function saveSetting(key, value) {
+    extension_settings[EXT_NAME][key] = value;
+    const ctx = typeof getContext === 'function' ? getContext() : SillyTavern.getContext();
+    ctx.saveSettingsDebounced();
 }
 
 async function callGenerateQuietPrompt(prompt) {
@@ -226,45 +223,45 @@ async function callGenerateQuietPrompt(prompt) {
 
 async function sendWechatMessage(overridePrompt=null) {
     if (window.is_generating) {
-        toastr.warning('AI正在生成中，请稍后再试', '微信推送');
+        toastr.warning("AI正在生成中，请稍后再试", "微信推送");
         return;
     }
-    
     const token = extension_settings[EXT_NAME].token;
     if (!token) {
-        toastr.error('请先输入 Token', '微信推送');
+        toastr.error("请先输入 Token", "微信推送");
         return;
     }
     
-    toastr.info('静默指令已发送，等待 AI 生成...', '微信推送');
-    window.is_generating = true;
-    
+    toastr.info("静默指令已发送，等待 AI 生成...", "微信推送");
+    window.is_generating = true; 
+
     try {
         const nowTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
-        let userPrompt = overridePrompt && overridePrompt.trim() !== '' ? overridePrompt : (extension_settings[EXT_NAME].customPrompt || '');
+        let userPrompt = (overridePrompt && overridePrompt.trim() !== "") ? overridePrompt : (extension_settings[EXT_NAME].customPrompt || '');
         
         const strictOOC = "【OOC指令：绝对中断当前小说的RP格式！你现在在发真实的微信消息。禁止任何动作描写(如*笑*)、心理描写、思考链和表情包。你必须输出两个部分：1. 将微信推送的标题包裹在 <Title> 和 </Title> 标签内。 2. 将60-400字的微信正文纯文字包裹在 <WeChat> 和 </WeChat> 标签内！微信正文需60-400字，不要太短，可分段！】";
-        let finalPrompt = "";
         
+        let finalPrompt = "";
         if (userPrompt.trim() === '') {
             finalPrompt = `[系统指令：现在是 ${nowTime}。请主动发一条微信给我。${strictOOC}]`;
         } else {
             let replacedPrompt = userPrompt.replace(/\{\{time\}\}/g, nowTime).replace(/\{\{time_UTC\+8\}\}/g, nowTime);
             finalPrompt = `[系统指令：${replacedPrompt}。${strictOOC}]`;
         }
-        
+
         const rawResponse = await callGenerateQuietPrompt(finalPrompt);
         if (!rawResponse || rawResponse.trim() === '') {
-            toastr.error('AI 生成了空消息，请检查模型状态', '微信推送');
+            toastr.error("AI 生成了空消息，请检查模型状态", "微信推送");
             return;
         }
-        
+
         let messageText = rawResponse.trim().replace(/\\n/g, '\n');
         let pushContent = "";
+        
         const ctx = typeof getContext === 'function' ? getContext() : SillyTavern.getContext();
         let charName = ctx.name2 || window.name2 || "AI";
         let pushTitle = `来自 ${charName} 的新消息`;
-        
+
         const titleMatch = messageText.match(/<Title>([\s\S]*?)<\/Title>/i);
         if (titleMatch && titleMatch[1]) {
             pushTitle = titleMatch[1].replace(/[\r\n]/g, '').trim();
@@ -281,91 +278,99 @@ async function sendWechatMessage(overridePrompt=null) {
         }
         
         if (!pushContent || pushContent === '') {
-            pushContent = '【提取失败或被过滤】原始捕获：' + messageText.substring(0, 50);
+            pushContent = "【提取失败或被过滤】原始捕获：" + messageText.substring(0, 50);
         }
-        
-        toastr.info('内容已生成，正在推送到微信...', '微信推送');
-        const response = await fetch('http://www.pushplus.plus/send', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+
+        toastr.info("内容已生成，正在推送到微信...", "微信推送");
+
+        const response = await fetch("http://www.pushplus.plus/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 token: token,
                 title: pushTitle,
                 content: pushContent
             })
         });
-        
+
         const resData = await response.json();
         if (resData.code === 200) {
-            toastr.success('微信推送发送成功！', '微信推送');
+            toastr.success("微信推送发送成功！", "微信推送");
         } else {
-            console.error('PushPlus拦截报错:', resData);
-            toastr.error(`PushPlus拒绝发送: ${resData.msg}`, '微信推送');
+            console.error("PushPlus拦截报错:", resData);
+            toastr.error(`PushPlus拒绝发送: ${resData.msg}`, "微信推送");
         }
     } catch (error) {
-        console.error('执行出错:', error);
-        toastr.error(`执行过程发生错误: ${error.message}`, '微信推送');
+        console.error("执行出错:", error);
+        toastr.error(`执行过程发生错误: ${error.message}`, "微信推送");
     } finally {
         window.is_generating = false;
     }
 }
 
-function checkScheduledTasks() {
-    const now = new Date();
-    const currentHourMin = now.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
-    const currentDay = String(now.getDay()); 
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    const currentDateStr = `${year}-${month}-${day}`;
-
-    let tasksUpdated = false;
-
-    for (let i = extension_settings[EXT_NAME].scheduledTasks.length - 1; i >= 0; i--) {
-        let task = extension_settings[EXT_NAME].scheduledTasks[i];
-        
-        if (task.time === currentHourMin) {
-            let isToday = false;
-            if (task.freq === 'daily') {
-                isToday = true;
-            } else if (task.freq === 'once') {
-                isToday = (task.date === currentDateStr);
-            } else {
-                isToday = task.freq.split(',').includes(currentDay);
-            }
-            
-            if (isToday) {
-                sendWechatMessage(task.prompt);
-                if (task.freq === 'once') {
-                    extension_settings[EXT_NAME].scheduledTasks.splice(i, 1);
-                    tasksUpdated = true;
-                }
-            }
-        }
-    }
-
-    if (tasksUpdated) {
-        const ctx = typeof getContext === 'function' ? getContext() : SillyTavern.getContext();
-        ctx.saveSettingsDebounced();
-        refreshTaskList();
-    }
-}
-
+// 调度器管理：完全分离两种模式的计时器
 function manageTimer() {
     if (intervalTimer) { clearInterval(intervalTimer); intervalTimer = null; }
     if (scheduleTimer) { clearInterval(scheduleTimer); scheduleTimer = null; }
 
     if (!extension_settings[EXT_NAME].enabled) {
-        toastr.info('微信推送已关闭', '微信推送');
+        toastr.info("微信推送已关闭", "微信推送");
         return;
     }
 
     if (extension_settings[EXT_NAME].mode === 'interval') {
         const ms = extension_settings[EXT_NAME].intervalMinutes * 60 * 1000;
-        intervalTimer = setInterval(() => sendWechatMessage(), ms);
-        toastr.success(`定时已开启：每 ${extension_settings[EXT_NAME].intervalMinutes} 分钟触发`, '微信推送');
-    } else if (extension_settings[EXT_NAME].mode === 'schedule') {
-        scheduleTimer = setInterval(checkScheduledTasks, 60000);
-        toastr.success('多重提醒调度器已启动', '微信推送');
+        intervalTimer = setInterval(() => sendWechatMessage(null), ms);
+        toastr.success(`固定间隔开启：每 ${extension_settings[EXT_NAME].intervalMinutes} 分钟触发`, "微信推送");
+    } 
+    else if (extension_settings[EXT_NAME].mode === 'schedule') {
+        scheduleTimer = setInterval(checkScheduleTasks, 60000);
+        toastr.success("多重定时调度器已启动", "微信推送");
+    }
+}
+
+// 多重定时的核心轮询逻辑
+function checkScheduleTasks() {
+    const now = new Date();
+    const currentHourMin = now.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
+    const currentDay = now.getDay(); 
+    
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const currentDateStr = `${year}-${month}-${day}`;
+    
+    let needsSave = false;
+
+    extension_settings[EXT_NAME].scheduledTasks.forEach(task => {
+        if (!task.enabled) return;
+        
+        if (task.time === currentHourMin) {
+            let isToday = false;
+            
+            if (task.freq === 'daily') {
+                isToday = true;
+            } else if (task.freq === 'once') {
+                isToday = (task.date === currentDateStr);
+            } else {
+                isToday = task.freq.includes(currentDay.toString());
+            }
+            
+            if (isToday) {
+                sendWechatMessage(task.prompt);
+                
+                // 一次性任务执行后关闭状态
+                if (task.freq === 'once') {
+                    task.enabled = false;
+                    needsSave = true;
+                }
+            }
+        }
+    });
+
+    if (needsSave) {
+        const ctx = typeof getContext === 'function' ? getContext() : SillyTavern.getContext();
+        ctx.saveSettingsDebounced();
+        refreshTaskList();
     }
 }
